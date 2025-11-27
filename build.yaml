@@ -1,0 +1,12 @@
+agentrun_backend:
+  default:
+    languages:
+      - python3.12
+    cache:
+      paths:
+        - "~/.cache"
+    steps:
+      - run: mkdir -p python
+        path: ./agent
+      - run: pip install -r requirements.txt -t ./python
+        path: ./agent

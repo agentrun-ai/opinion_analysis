@@ -1,11 +1,12 @@
 [project]
 name = "agent"
-version = "0.1.0"
-description = "Add your description here"
+version = "2.0.0"
+description = "舆情分析系统 - 基于 AG-UI 协议"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "uvicorn",
+    "fastapi",
     "pydantic-ai-slim[ag-ui]",
     "pydantic-ai-slim[openai]",
     "python-dotenv",
@@ -13,4 +14,5 @@ dependencies = [
     "pandas",
     "googlesearch-python",
     "markdown>=3.10",
+    "agentrun-inner-test>=0.0.8",
 ]

@@ -2,6 +2,7 @@
 重构版舆情分析系统 - 实时状态同步优化
 所有工具直接注册到主 Agent，确保 StateSnapshotEvent 实时传播
 """
+
 from textwrap import dedent
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
@@ -9,19 +10,23 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.ag_ui import StateDeps
 from ag_ui.core import EventType, StateSnapshotEvent
 from dotenv import load_dotenv
-import json
+
+import os
 import asyncio
 from datetime import datetime
 
+
 load_dotenv()
 
-from agentrun.integration.pydantic_ai import model, toolset
+from agentrun.integration.pydantic_ai import model, toolset, sandbox_toolset
 from agentrun.utils.config import Config
+from agentrun.sandbox import TemplateType
 from analysis_standards import AnalysisStandards
 
 # =====
 # Models
 # =====
+
 
 class SearchResult(BaseModel):
     title: str
@@ -29,6 +34,7 @@ class SearchResult(BaseModel):
     snippet: str
     source: str
     date: str
+
 
 class AnalysisResult(BaseModel):
     keywords: List[str]
@@ -38,33 +44,81 @@ class AnalysisResult(BaseModel):
     summary: str
     data_sources: List[Dict[str, str]] = []  # 新增：关键数据来源（用于报告引用）
 
+
 class OpinionState(BaseModel):
     """State for the Opinion Analysis System."""
+
     keyword: str = Field(default="", description="The keyword being analyzed")
     status: str = Field(default="idle", description="Current status")
     logs: List[str] = Field(default_factory=list, description="Process logs")
-    max_results: int = Field(default=100, description="Maximum number of results to collect")
+    max_results: int = Field(
+        default=100, description="Maximum number of results to collect"
+    )
     batch_size: int = Field(default=20, description="Batch size for analysis")
-    
+
     raw_data: List[SearchResult] = Field(default_factory=list)
-    collected_data_summary: List[Dict[str, str]] = Field(default_factory=list, description="Summary for frontend")
-    batch_analyses: List[str] = Field(default_factory=list, description="Batch analysis summaries")
+    collected_data_summary: List[Dict[str, str]] = Field(
+        default_factory=list, description="Summary for frontend"
+    )
+    batch_analyses: List[str] = Field(
+        default_factory=list, description="Batch analysis summaries"
+    )
     analysis: Optional[AnalysisResult] = None
     report_text: str = Field(default="")
     final_html: str = Field(default="")
+
 
 # =====
 # Tool Setup
 # =====
 
-# 模型配置 - 添加超时设置
-# 注意: Config 本身不支持 max_retries，重试由 Agent 的 retries 参数和我们的指数退避函数处理
-model_config = Config(timeout=180)  # 3分钟超时
-agentrun_model = model("sdk-test-model-service", config=model_config)
 
-# 搜索工具配置 - 增加超时
-search_config = Config(timeout=120)  # 2分钟超时
-search_tools = toolset("web-search-baidu-8baa", config=search_config)
+agentrun_model_name = os.getenv("AGENTRUN_MODEL_NAME", "")
+agentrun_search_tool_name = os.getenv("AGENTRUN_SEARCH_TOOL_NAME", "")
+agentrun_browser_sandbox_name = os.getenv("AGENTRUN_BROWSER_SANDBOX_NAME", "")
+agentrun_code_interpreter_sandbox_name = os.getenv(
+    "AGENTRUN_CODE_INTERPRETER_SANDBOX_NAME", ""
+)
+
+if not agentrun_model_name:
+    raise ValueError("AGENTRUN_MODEL_NAME is not set")
+
+if not agentrun_search_tool_name and not agentrun_browser_sandbox_name:
+    raise ValueError(
+        "AGENTRUN_SEARCH_TOOL_NAME or AGENTRUN_BROWSER_SANDBOX_NAME is not set"
+    )
+
+
+# 模型配置 - 添加超时设置
+config = Config(timeout=180)  # 3分钟超时
+
+agentrun_model = model(agentrun_model_name, config=config)
+# 搜索工具
+agentrun_search_tools = (
+    toolset(agentrun_search_tool_name, config=config)
+    if agentrun_search_tool_name
+    else []
+)
+agentrun_browser_sandbox_tools = (
+    sandbox_toolset(
+        agentrun_browser_sandbox_name, template_type=TemplateType.CODE_INTERPRETER
+    )
+    if agentrun_browser_sandbox_name
+    else []
+)
+agentrun_code_interpreter_tools = (
+    sandbox_toolset(
+        agentrun_code_interpreter_sandbox_name,
+        template_type=TemplateType.CODE_INTERPRETER,
+    )
+    if agentrun_code_interpreter_sandbox_name
+    else []
+)
+
+
+search_tools = [*agentrun_search_tools, *agentrun_browser_sandbox_tools]
+analysis_tools = agentrun_code_interpreter_tools
+
 
 print("=" * 80)
 print("🚀 V2: 实时同步 + 指数退避重试机制")
@@ -88,12 +142,14 @@ print("=" * 80 + "\n")
 # 敏感词列表（示例，实际应该更全面）
 SENSITIVE_KEYWORDS = ["敏感", "政治", "暴力", "色情", "赌博"]
 
+
 def filter_sensitive_content(text: str) -> str:
     """过滤敏感内容"""
     for keyword in SENSITIVE_KEYWORDS:
         if keyword in text:
             text = text.replace(keyword, "***")
     return text
+
 
 async def retry_with_exponential_backoff(
     func,
@@ -102,63 +158,79 @@ async def retry_with_exponential_backoff(
     backoff_factor: float = 2.0,
     max_delay: float = 60.0,
     *args,
-    **kwargs
+    **kwargs,
 ):
     """
     指数退避重试机制 - 专门用于处理大模型 API 的 quota 限制
-    
+
     参数:
     - func: 要执行的异步函数
     - max_retries: 最大重试次数（默认 5 次）
     - initial_delay: 初始延迟（秒，默认 1.0）
     - backoff_factor: 退避因子（默认 2.0，即每次延迟翻倍）
     - max_delay: 最大延迟时间（秒，默认 60）
-    
+
     重试策略:
     - 第 1 次失败: 等待 1.0 秒
-    - 第 2 次失败: 等待 2.0 秒  
+    - 第 2 次失败: 等待 2.0 秒
     - 第 3 次失败: 等待 4.0 秒
     - 第 4 次失败: 等待 8.0 秒
     - 第 5 次失败: 等待 16.0 秒
     - ...
     - 最大等待: 60.0 秒
-    
+
     返回:
     - 函数执行结果
-    
+
     异常:
     - 如果所有重试都失败，抛出最后一次的异常
     """
     delay = initial_delay
     last_exception = None
-    
+
     for attempt in range(max_retries):
         try:
             # 尝试执行函数
             result = await func(*args, **kwargs)
-            
+
             # 成功则返回
             if attempt > 0:
                 print(f"✅ 指数退避重试成功！(第 {attempt + 1} 次尝试)")
             return result
-            
+
         except Exception as e:
             last_exception = e
             error_msg = str(e).lower()
-            
+
             # 判断是否是 quota、速率限制或其他可重试错误
-            is_retryable_error = any(keyword in error_msg for keyword in [
-                'quota', 'rate limit', 'too many requests', 'throttle', 
-                '429', 'limit exceeded', 'timeout', 'connection', 
-                'temporarily unavailable', 'service unavailable', '503', '502'
-            ])
-            
+            is_retryable_error = any(
+                keyword in error_msg
+                for keyword in [
+                    "quota",
+                    "rate limit",
+                    "too many requests",
+                    "throttle",
+                    "429",
+                    "limit exceeded",
+                    "timeout",
+                    "connection",
+                    "temporarily unavailable",
+                    "service unavailable",
+                    "503",
+                    "502",
+                    "bad file descriptor",
+                    "errno 9",
+                    "connecterror",
+                    "network error",
+                ]
+            )
+
             # 如果是最后一次重试，直接抛出异常
             if attempt == max_retries - 1:
                 print(f"❌ 已达到最大重试次数 ({max_retries})，请求最终失败")
                 print(f"   最后错误: {str(e)[:200]}")
                 raise last_exception
-            
+
             # 对可重试错误进行指数退避
             if is_retryable_error:
                 wait_time = min(delay, max_delay)
@@ -166,37 +238,43 @@ async def retry_with_exponential_backoff(
                 print(f"   错误信息: {str(e)[:100]}")
                 print(f"🔄 使用指数退避策略，等待 {wait_time:.1f} 秒后重试...")
                 print(f"   当前尝试: {attempt + 1}/{max_retries}")
-                
+
                 await asyncio.sleep(wait_time)
-                
+
                 # 指数退避：delay = delay * backoff_factor
                 delay *= backoff_factor
             else:
                 # 不是明确的可重试错误，但仍然尝试重试（宽松策略）
                 wait_time = min(delay, max_delay)
                 print(f"⚠️ 请求失败: {str(e)[:100]}")
-                print(f"🔄 等待 {wait_time:.1f} 秒后重试... ({attempt + 1}/{max_retries})")
-                
+                print(
+                    f"🔄 等待 {wait_time:.1f} 秒后重试... ({attempt + 1}/{max_retries})"
+                )
+
                 await asyncio.sleep(wait_time)
                 delay *= backoff_factor
-    
+
     # 理论上不会到这里，但为了安全
     if last_exception:
         raise last_exception
 
-async def log_and_update(ctx: RunContext[StateDeps[OpinionState]], status: str, message: str):
+
+async def log_and_update(
+    ctx: RunContext[StateDeps[OpinionState]], status: str, message: str
+):
     """内部辅助函数：更新状态和日志
-    
+
     注意：状态更新后，AG UI 会自动同步到前端（通过 WebSocket）
     """
-    timestamp = datetime.now().strftime('%H:%M:%S')
+    timestamp = datetime.now().strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] {message}"
     ctx.deps.state.status = status
     ctx.deps.state.logs.append(log_entry)
     print(f"📊 {log_entry}")
-    
+
     # 注意：不需要返回 StateSnapshotEvent
     # AG UI 会自动检测状态变化并同步到前端
+
 
 # =====
 # Main Opinion Agent - 所有工具都在这里
@@ -207,8 +285,9 @@ opinion_agent = Agent(
     model=agentrun_model,
     deps_type=StateDeps[OpinionState],
     retries=8,  # 增加重试次数以提高容错性
-    tools=[*search_tools],  # 直接包含搜索工具
-    system_prompt=dedent(f"""
+    tools=[*search_tools, *analysis_tools],  # 直接包含搜索工具
+    system_prompt=dedent(
+        f"""
         你是具有 10 年以上经验的企业级舆情分析专家，曾服务于多家上市公司和政府机构。
         当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}
         
@@ -309,7 +388,7 @@ opinion_agent = Agent(
         - 样本量：共 X 条有效数据
         - **数据来源分布**：微博 XX%、知乎 XX%、新闻 XX%
         
-        ### 1.2 整体态势  
+        ### 1.2 整体态势
         - 情感分布（基于统一标准）：正面 XX%、中性 XX%、负面 XX%
         - 舆情指数：X.XX（-1到1，基于情感得分）
         - 传播特征：热度趋势呈现 [上升/下降/平稳] 态势
@@ -397,31 +476,36 @@ opinion_agent = Agent(
         ✅ 报告撰写：战略高度、专业深度、数据来源引用、可执行性
         ✅ 容错优先：遇到错误继续前进，不要放弃任务
         ✅ 全程透明：用户实时看到每一步进展
-    """).strip()
+    """
+    ).strip(),
 )
 
 # =====
 # 数据收集工具 (直接注册到 opinion_agent)
 # =====
 
+
 @opinion_agent.tool
-async def start_collection(ctx: RunContext[StateDeps[OpinionState]], keyword: str) -> StateSnapshotEvent:
+async def start_collection(
+    ctx: RunContext[StateDeps[OpinionState]], keyword: str
+) -> StateSnapshotEvent:
     """开始数据收集流程"""
     ctx.deps.state.keyword = keyword
     max_results = ctx.deps.state.max_results
-    
+
     await log_and_update(
-        ctx, 
-        "collecting", 
-        f"🔍 开始收集关键词 '{keyword}' 的相关数据，目标: {max_results} 条。必须收集满 {max_results} 条后调用 finish_collection"
+        ctx,
+        "collecting",
+        f"🔍 开始收集关键词 '{keyword}' 的相关数据，目标: {max_results} 条。必须收集满 {max_results} 条后调用 finish_collection",
     )
-    
+
     print(f"\n{'='*60}")
     print(f"🔍 数据收集阶段")
     print(f"🎯 目标: 收集 {max_results} 条数据")
     print(f"{'='*60}\n")
-    
+
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
+
 
 @opinion_agent.tool
 async def save_search_result(
@@ -433,126 +517,140 @@ async def save_search_result(
     date: str,
 ) -> StateSnapshotEvent:
     """保存一条搜索结果 - 前端实时更新！
-    
+
     每次调用都会触发状态同步到前端
     """
     # 检查是否已达到最大数量
     current_count = len(ctx.deps.state.raw_data)
     max_count = ctx.deps.state.max_results
-    
+
     if current_count >= max_count:
-        msg = f"⚠️ 已达到目标数量 {max_count}/{max_count}，请立即调用 finish_collection！"
+        msg = (
+            f"⚠️ 已达到目标数量 {max_count}/{max_count}，请立即调用 finish_collection！"
+        )
         print(msg)
         return msg
-    
+
     # 过滤敏感内容
     title = filter_sensitive_content(title)
     snippet = filter_sensitive_content(snippet)
-    
+
     # 保存完整数据
-    result = SearchResult(title=title, url=url, snippet=snippet, source=source, date=date)
+    result = SearchResult(
+        title=title, url=url, snippet=snippet, source=source, date=date
+    )
     ctx.deps.state.raw_data.append(result)
-    
+
     # 同步更新前端摘要
-    ctx.deps.state.collected_data_summary.append({
-        "title": title,
-        "url": url,
-        "source": source,
-    })
-    
+    ctx.deps.state.collected_data_summary.append(
+        {
+            "title": title,
+            "url": url,
+            "source": source,
+        }
+    )
+
     current_count = len(ctx.deps.state.raw_data)
     max_count = ctx.deps.state.max_results
-    
+
     await log_and_update(
-        ctx, 
-        "collecting", 
-        f"收集数据 [{current_count}/{max_count}]: {source} - {title[:30]}..."
+        ctx,
+        "collecting",
+        f"收集数据 [{current_count}/{max_count}]: {source} - {title[:30]}...",
     )
-    
+
     remaining = max_count - current_count
-    
+
     print(f"💾 [SAVED {current_count}/{max_count}] {source}: {title[:50]}...")
     print(f"📊 [进度] 已完成 {current_count}/{max_count}，还需 {remaining} 条")
-    
+
     # 同时返回进度提示和状态事件
     # 注意：我们需要先触发状态同步，然后返回消息给 LLM
     # 但 PydanticAI 不支持同时返回多个值
     # 解决方案：通过 tool 的 description 中的特殊标记来触发事件
-    
+
     # 构建进度消息
     if remaining == 0:
         progress_msg = f"✅ 数据保存成功！进度: {current_count}/{max_count} (100%) - 已达到目标，立即调用 finish_collection！"
     else:
         progress_msg = f"✅ 数据保存成功！进度: {current_count}/{max_count} ({int(current_count/max_count*100)}%) - 还需 {remaining} 条，继续搜索！"
-    
+
     # 返回 StateSnapshotEvent - 确保前端立即更新
     # LLM 会通过 logs 看到进度信息（log_and_update 已添加到日志中）
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
+
 @opinion_agent.tool
-async def finish_collection(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
+async def finish_collection(
+    ctx: RunContext[StateDeps[OpinionState]],
+) -> StateSnapshotEvent:
     """完成数据收集"""
     count = len(ctx.deps.state.raw_data)
     await log_and_update(ctx, "collected", f"数据收集完成，共 {count} 条")
     print(f"✅ [收集完成] 共 {count} 条数据")
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
+
 # =====
 # 数据分析工具
 # =====
 
+
 @opinion_agent.tool
-async def start_analysis(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
+async def start_analysis(
+    ctx: RunContext[StateDeps[OpinionState]],
+) -> StateSnapshotEvent:
     """开始数据分析"""
     await log_and_update(ctx, "analyzing", "开始分析收集到的数据...")
     print(f"\n{'='*60}\n📊 数据分析阶段\n{'='*60}")
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
+
 @opinion_agent.tool
 async def get_batch_data(
-    ctx: RunContext[StateDeps[OpinionState]], 
-    batch_index: int
+    ctx: RunContext[StateDeps[OpinionState]], batch_index: int
 ) -> str:
     """获取指定批次的数据用于分析
-    
+
     参数:
     - batch_index: 批次索引（从0开始）
-    
+
     返回:
     - 该批次的数据详情，或错误信息
     """
     raw_data = ctx.deps.state.raw_data
     if not raw_data:
         return "错误：没有收集到数据"
-    
+
     batch_size = ctx.deps.state.batch_size
     start_idx = batch_index * batch_size
     end_idx = min(start_idx + batch_size, len(raw_data))
-    
+
     if start_idx >= len(raw_data):
         return f"错误：批次 {batch_index} 超出范围（总数据: {len(raw_data)}条，批次大小: {batch_size}）"
-    
+
     batch_data = raw_data[start_idx:end_idx]
-    
+
     data_text = f"批次 {batch_index + 1} 数据（{start_idx + 1}-{end_idx}/{len(raw_data)}）：\n\n"
     for i, item in enumerate(batch_data, start_idx + 1):
         data_text += f"{i}. **{item.title}**\n"
         data_text += f"   来源: {item.source}\n"
         data_text += f"   摘要: {item.snippet[:150]}...\n"
         data_text += f"   日期: {item.date}\n\n"
-    
+
     return data_text
+
 
 @opinion_agent.tool
 async def run_standard_analysis(ctx: RunContext[StateDeps[OpinionState]]) -> str:
     """
     使用统一标准对数据进行量化分析
-    
+
     这个工具会自动计算：
     - 关键词（基于词频统计，过滤停用词）
     - 情感得分和分布（基于情感词典，-1到1）
     - 热度趋势（7个时间点，模拟舆情曲线）
-    
+
     返回: 标准化分析结果的 JSON 字符串
     """
     data_list = [
@@ -560,18 +658,22 @@ async def run_standard_analysis(ctx: RunContext[StateDeps[OpinionState]]) -> str
             "title": item.title,
             "snippet": item.snippet,
             "source": item.source,
-            "date": item.date
+            "date": item.date,
         }
         for item in ctx.deps.state.raw_data
     ]
-    
+
     # 使用标准化分析
     result = AnalysisStandards.analyze_data(data_list)
-    
-    print(f"🔬 [标准化分析] Keywords={result['keywords'][:5]}, Sentiment={result['sentiment_score']}")
-    
+
+    print(
+        f"🔬 [标准化分析] Keywords={result['keywords'][:5]}, Sentiment={result['sentiment_score']}"
+    )
+
     import json
+
     return json.dumps(result, ensure_ascii=False, indent=2)
+
 
 @opinion_agent.tool
 async def get_data_overview(ctx: RunContext[StateDeps[OpinionState]]) -> str:
@@ -579,11 +681,11 @@ async def get_data_overview(ctx: RunContext[StateDeps[OpinionState]]) -> str:
     raw_data = ctx.deps.state.raw_data
     if not raw_data:
         return "错误：没有收集到数据"
-    
+
     batch_size = ctx.deps.state.batch_size
     total_count = len(raw_data)
     batch_count = (total_count + batch_size - 1) // batch_size  # 向上取整
-    
+
     overview = f"""
 数据概览：
 - 总数据量: {total_count} 条
@@ -598,25 +700,26 @@ async def get_data_overview(ctx: RunContext[StateDeps[OpinionState]]) -> str:
 
 数据来源分布：
 """
-    
+
     # 统计来源分布
     source_counts = {}
     for item in raw_data:
         source_counts[item.source] = source_counts.get(item.source, 0) + 1
-    
-    for source, count in sorted(source_counts.items(), key=lambda x: x[1], reverse=True):
+
+    for source, count in sorted(
+        source_counts.items(), key=lambda x: x[1], reverse=True
+    ):
         overview += f"- {source}: {count} 条\n"
-    
+
     return overview
+
 
 @opinion_agent.tool
 async def save_batch_analysis(
-    ctx: RunContext[StateDeps[OpinionState]],
-    batch_index: int,
-    analysis_summary: str
+    ctx: RunContext[StateDeps[OpinionState]], batch_index: int, analysis_summary: str
 ) -> StateSnapshotEvent:
     """保存单个批次的分析摘要
-    
+
     参数:
     - batch_index: 批次索引
     - analysis_summary: 该批次的分析摘要（关键词、情感、主要观点等）
@@ -624,37 +727,35 @@ async def save_batch_analysis(
     # 确保列表足够长
     while len(ctx.deps.state.batch_analyses) <= batch_index:
         ctx.deps.state.batch_analyses.append("")
-    
+
     ctx.deps.state.batch_analyses[batch_index] = analysis_summary
-    
+
     completed = sum(1 for s in ctx.deps.state.batch_analyses if s)
     total = len(ctx.deps.state.batch_analyses)
-    
-    await log_and_update(
-        ctx,
-        "analyzing",
-        f"批次分析进度: {completed}/{total} 完成"
-    )
-    
+
+    await log_and_update(ctx, "analyzing", f"批次分析进度: {completed}/{total} 完成")
+
     print(f"📊 [批次 {batch_index + 1}] 分析完成: {analysis_summary[:100]}...")
-    
+
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
+
 
 @opinion_agent.tool
 async def merge_batch_analyses(ctx: RunContext[StateDeps[OpinionState]]) -> str:
     """合并所有批次的分析摘要，返回综合视图"""
     if not ctx.deps.state.batch_analyses:
         return "错误：没有批次分析结果"
-    
+
     merged = f"批次分析汇总（共 {len(ctx.deps.state.batch_analyses)} 批）：\n\n"
-    
+
     for i, summary in enumerate(ctx.deps.state.batch_analyses):
         if summary:
             merged += f"批次 {i + 1}:\n{summary}\n\n"
-    
+
     merged += "\n请基于以上批次分析，提取整体的关键词、情感倾向、热度趋势等。"
-    
+
     return merged
+
 
 @opinion_agent.tool
 async def save_analysis_result(
@@ -674,26 +775,31 @@ async def save_analysis_result(
         summary=summary,
     )
     ctx.deps.state.analysis = result
-    
+
     await log_and_update(
         ctx,
         "analyzed",
-        f"分析完成 - 情感得分: {sentiment_score:.2f}, 正面占比: {sentiment_distribution.get('正面', 0)}%"
+        f"分析完成 - 情感得分: {sentiment_score:.2f}, 正面占比: {sentiment_distribution.get('正面', 0)}%",
     )
-    
+
     print(f"📊 [分析完成] Keywords={keywords}, Sentiment={sentiment_score}")
-    
+
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
+
 @opinion_agent.tool
-async def finish_analysis(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
+async def finish_analysis(
+    ctx: RunContext[StateDeps[OpinionState]],
+) -> StateSnapshotEvent:
     """完成数据分析"""
     await log_and_update(ctx, "analyzed", "数据分析完成")
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
+
 # =====
 # 报告撰写工具
 # =====
+
 
 @opinion_agent.tool
 async def start_writing(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
@@ -702,15 +808,16 @@ async def start_writing(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapsh
     print(f"\n{'='*60}\n📝 报告撰写阶段\n{'='*60}")
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
+
 @opinion_agent.tool
 async def get_analysis_data(ctx: RunContext[StateDeps[OpinionState]]) -> str:
     """获取分析数据用于撰写报告"""
     if not ctx.deps.state.analysis:
         return "错误：没有分析结果"
-    
+
     analysis = ctx.deps.state.analysis
     raw_data = ctx.deps.state.raw_data
-    
+
     data_text = f"""
 分析数据摘要：
 
@@ -728,55 +835,63 @@ async def get_analysis_data(ctx: RunContext[StateDeps[OpinionState]]) -> str:
 """
     for i, item in enumerate(raw_data[:5], 1):
         data_text += f"\n{i}. {item.title}\n   来源: {item.source} | {item.date}\n   {item.snippet[:150]}...\n"
-    
+
     data_text += f"\n总数据量: {len(raw_data)} 条"
-    
+
     return data_text
 
-@opinion_agent.tool
-async def save_report(ctx: RunContext[StateDeps[OpinionState]], report_content: str) -> StateSnapshotEvent:
-    """保存报告内容 - 前端实时更新！"""
-    ctx.deps.state.report_text = report_content
-    
-    await log_and_update(ctx, "written", f"报告撰写完成 ({len(report_content)} 字符)")
-    
-    print(f"✅ [报告完成] {len(report_content)} 字符")
-    
-    return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
 
 @opinion_agent.tool
-async def finish_writing(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
+async def save_report(
+    ctx: RunContext[StateDeps[OpinionState]], report_content: str
+) -> StateSnapshotEvent:
+    """保存报告内容 - 前端实时更新！"""
+    ctx.deps.state.report_text = report_content
+
+    await log_and_update(ctx, "written", f"报告撰写完成 ({len(report_content)} 字符)")
+
+    print(f"✅ [报告完成] {len(report_content)} 字符")
+
+    return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
+
+
+@opinion_agent.tool
+async def finish_writing(
+    ctx: RunContext[StateDeps[OpinionState]],
+) -> StateSnapshotEvent:
     """完成报告撰写"""
     await log_and_update(ctx, "written", "报告撰写完成")
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
+
 
 # =====
 # HTML 渲染工具
 # =====
 
+
 @opinion_agent.tool
 async def render_html(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
     """渲染 HTML 报告"""
     await log_and_update(ctx, "rendering", "正在将 Markdown 渲染为 HTML...")
-    
+
     if not ctx.deps.state.report_text or not ctx.deps.state.analysis:
         raise ValueError("缺少报告内容或分析结果")
-    
+
     report_text = ctx.deps.state.report_text
     analysis = ctx.deps.state.analysis
     keyword = ctx.deps.state.keyword or "关键词"
-    
+
     # Markdown 转 HTML
     try:
         import markdown
+
         report_html = markdown.markdown(
-            report_text,
-            extensions=['extra', 'codehilite', 'tables', 'toc']
+            report_text, extensions=["extra", "codehilite", "tables", "toc"]
         )
     except ImportError:
-        report_html = report_text.replace('\n\n', '</p><p>').replace('\n', '<br>')
+        report_html = report_text.replace("\n\n", "</p><p>").replace("\n", "<br>")
         report_html = f"<p>{report_html}</p>"
-    
+
     # 生成完整 HTML (简化版，可以后续扩展)
     html_content = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -818,15 +933,16 @@ async def render_html(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshot
     <div class="container">
         <h1>📊 {keyword} 舆情分析报告</h1>
         <div class="report-body">{report_html}</div>
-    </div>
+            </div>
 </body>
 </html>"""
-    
+
     ctx.deps.state.final_html = html_content
-    
+
     await log_and_update(ctx, "rendering", "HTML 渲染完成")
-    
+
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
+
 
 @opinion_agent.tool
 async def mark_complete(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapshotEvent:
@@ -834,4 +950,3 @@ async def mark_complete(ctx: RunContext[StateDeps[OpinionState]]) -> StateSnapsh
     await log_and_update(ctx, "complete", "✨ 舆情分析报告已生成！")
     print(f"\n{'='*60}\n✅ 任务完成！\n{'='*60}\n")
     return StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=ctx.deps.state)
-

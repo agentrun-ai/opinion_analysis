@@ -1,0 +1,93 @@
+edition: 3.0.0
+name: agentrun-integration-template
+access: '{{ access }}'
+vars:
+  region: '{{ region }}'
+  function_name: '{{ functionName }}'
+  role: '{{ role }}'
+
+resources:
+  opinion_analysis:
+    component: agentrun
+    props:
+      region: ${vars.region}
+
+      agent:
+        # 基本信息
+        name: ${vars.function_name}
+        description: 'opinion_analysise'
+
+        code:
+          src: ./backend
+          language: python3.12
+          command:
+            - python3
+            - src/main.py
+
+        # 资源配置
+        cpu: 1.0
+        memory: 2048
+
+        # 端口和并发
+        port: 8000
+        instanceConcurrency: 200
+
+        # 网络配置 - 仅公网访问
+        internetAccess: true
+
+        # 环境变量
+        environmentVariables:
+          PYTHONPATH: /code/python:/opt/python:/code:/code/python
+
+          AGENTRUN_MODEL_NAME: '{{ agentrun_model }}'
+          {{ if search_tool }}AGENTRUN_SEARCH_TOOL_NAME: '{{ search_tool }}'{{ /if }}
+          {{ if browser_template }}AGENTRUN_BROWSER_SANDBOX_NAME: '{{ browser_template }}'{{ /if }}
+          {{ if code_interpreter_template }}AGENTRUN_CODE_INTERPRETER_SANDBOX_NAME: '{{ code_interpreter_template }}'{{ /if }}
+
+        # 日志配置
+        # logConfig:
+        #   project: ws-testhz
+        #   logstore: acs-ecs-system
+        role: ${vars.role}
+
+        # 端点配置
+        endpoints:
+          - name: prod
+            version: LATEST
+            description: '生产环境端点'
+
+  web:
+    component: fc3
+    props:
+      region: ${vars.region}
+
+      functionName: ${vars.function_name}_web
+      description: 'opinion_analysise'
+
+      runtime: custom
+      code: ./frontend/out
+      customRuntimeConfig:
+        command:
+          - node
+          - index.js
+
+      # 资源配置
+      cpu: 0.5
+      memory: 512
+
+      # 端口和并发
+      port: 8000
+      instanceConcurrency: 200
+
+      # 网络配置 - 仅公网访问
+      internetAccess: true
+
+      environmentVariables:
+        ENDPOINT: '${resources.opinion_analysis.output.agent.endpoints.0.url}/api/agents'
+
+      customDomain:
+        protocol: 'HTTP'
+        route:
+          path: '/*'
+          qualifier: 'LATEST'
+        domainName: auto

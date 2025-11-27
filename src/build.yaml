@@ -1,0 +1,12 @@
+opinion_analysis:
+  default:
+    languages:
+      - python3.12
+    cache:
+      paths:
+        - "~/.cache"
+    steps:
+      - run: mkdir -p python
+        path: ./backend
+      - run: python3 -m pip install -t python ${shell cat src/backend/pyproject.toml | awk -F, '/^ / { printf "%s", $$1 }'} 
+        path: ./backend

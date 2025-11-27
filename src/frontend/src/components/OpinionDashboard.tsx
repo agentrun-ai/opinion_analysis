@@ -1,28 +1,30 @@
 'use client';
 
-import { AgentState } from '@/lib/types';
-import { useCoAgent } from '@copilotkit/react-core';
-import { useState, useEffect, useRef } from 'react';
+import { AgentState } from '../lib/types';
+import { useAgentState } from '../hooks/useAgentState';
+import { ChatPanel } from './ChatPanel';
+import { useEffect, useRef } from 'react';
 
 export function OpinionDashboard() {
-  const { state, setState } = useCoAgent<AgentState>({
-    name: 'opinion_agent', // Updated agent name
-    initialState: {
-      keyword: '',
-      status: 'idle',
-      logs: [],
-      max_results: 5,
-      batch_size: 20,
-      raw_data: [],
-      collected_data_summary: [],
-      batch_analyses: [],
-      analysis: null,
-      report_text: '',
-      final_html: '',
-    },
-  });
+  const { state, setState, running, sendMessage, messages, error } =
+    useAgentState<AgentState>({
+      name: 'opinion_agent',
+      agentUrl: 'c410d179b056797269a4a2188bdf8a48', // 末尾需要斜杠，因为 AG-UI 挂载在 /api/agent
+      initialState: {
+        keyword: '',
+        status: 'idle',
+        logs: [],
+        max_results: 5,
+        batch_size: 20,
+        raw_data: [],
+        collected_data_summary: [],
+        batch_analyses: [],
+        analysis: null,
+        report_text: '',
+        final_html: '',
+      },
+    });
 
-  const [input, setInput] = useState('');
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   // 调试：监听状态变化
@@ -35,48 +37,6 @@ export function OpinionDashboard() {
       collected_data_summary: state.collected_data_summary,
     });
   }, [state]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim()) return;
-
-    // We set the state to trigger the agent's attention via the shared state,
-    // or we rely on the user chatting in the sidebar.
-    // However, the prompt implies the user inputs "Lei Jun" and it starts.
-    // In CopilotKit, updating shared state is one way to signal context.
-    // But typically we interact via the chat.
-    // Here, we can simulate the start by setting the keyword and status.
-    // But wait, the agent needs to *react* to this.
-    // The PydanticAI agent is typically reactive to *messages*.
-    // But here we are using state dependencies.
-    // If I set `keyword` here, the agent doesn't automatically "run" unless prompted.
-    // However, for this "System" feel, maybe we just use the chat sidebar to drive it?
-    // The prompt says "When user inputs 'Lei Jun'". This usually implies the Chat Interface.
-    // So the Dashboard is mostly for *Visualization*.
-
-    // But I can also try to set the keyword in state and let the user confirm in chat,
-    // or send a message programmatically if CopilotKit supports it.
-    // For now, I will just bind the input to a state update that might help the agent context.
-    // Better yet, I will let the user type in the chat sidebar as the primary trigger,
-    // OR I can provide a "Start Analysis" button that sends a message.
-    // The CopilotKit `useCopilotChat` hook might be useful here but I'll stick to
-    // the provided `useCoAgent` for state sync.
-
-    // I will just update the state for now, and the user can type in the chat
-    // "Analyze Lei Jun" or the agent sees the state change.
-    // Actually, the most robust way is to ask the user to use the sidebar,
-    // BUT a "Start" button is better UX.
-    // Since I don't have `useCopilotChat` set up in this file, I'll rely on the Sidebar
-    // or just showing the state.
-    // Wait, I can just display the input and ask the user to use the chat.
-    // OR, I can update the state keyword and hope the agent notices?
-    // PydanticAI agent loop usually waits for a user message.
-
-    // Let's assume the User interacts via the Chat Sidebar mostly,
-    // but this Dashboard shows the *result*.
-    // However, I'll add a visual "Start" that just instructs the user or sets the keyword context.
-    setState({ ...state, keyword: input });
-  };
 
   // Auto-scroll logs
   useEffect(() => {
@@ -91,6 +51,9 @@ export function OpinionDashboard() {
           <h1 className='text-2xl md:text-3xl font-bold tracking-wider text-transparent bg-clip-text bg-linear-to-r from-cyan-400 to-blue-600'>
             舆情分析系统
           </h1>
+          <p className='text-xs text-slate-500 mt-1'>
+            基于 AG-UI 协议 · 直接 HTTP SSE 通信
+          </p>
         </div>
         <div className='text-right hidden md:block'>
           <div
@@ -108,54 +71,29 @@ export function OpinionDashboard() {
       </header>
 
       <div className='flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden'>
-        {/* Left Column: Controls, Logs & Data */}
+        {/* Left Column: Chat & Controls */}
         <div className='lg:col-span-4 flex flex-col gap-6 overflow-hidden max-h-[calc(100vh-200px)]'>
-          {/* Usage Instructions */}
-          <div className='bg-linear-to-br from-cyan-900/20 to-blue-900/20 border border-cyan-500/30 p-6 rounded-xl backdrop-blur-sm'>
-            <h2 className='text-sm font-semibold text-cyan-300 mb-4 uppercase flex items-center gap-2'>
-              <span className='w-2 h-2 bg-cyan-400 rounded-full animate-pulse'></span>
-              使用说明
+          {/* Chat Panel */}
+          <div className='flex-1 min-h-[300px]'>
+            <ChatPanel
+              messages={messages}
+              onSendMessage={sendMessage}
+              running={running}
+              error={error}
+            />
+          </div>
+
+          {/* Configuration */}
+          <div className='bg-linear-to-br from-cyan-900/20 to-blue-900/20 border border-cyan-500/30 p-4 rounded-xl backdrop-blur-sm'>
+            <h2 className='text-sm font-semibold text-cyan-300 mb-3 uppercase flex items-center gap-2'>
+              <span className='w-2 h-2 bg-cyan-400 rounded-full'></span>
+              配置选项
             </h2>
-            <div className='space-y-3 text-sm text-slate-300'>
-              <div className='flex items-start gap-3'>
-                <div className='shrink-09 w-8 h-8 bg-cyan-500/10 border border-cyan-500/30 rounded-lg flex items-center justify-center text-cyan-400 font-bold'>
-                  1
-                </div>
-                <div>
-                  <p className='font-medium text-cyan-200'>在右侧聊天框输入</p>
-                  <p className='text-xs text-slate-500 mt-1'>
-                    例如："分析'新能源汽车'的舆情"
-                  </p>
-                </div>
-              </div>
-              <div className='flex items-start gap-3'>
-                <div className='shrink-09 w-8 h-8 bg-cyan-500/10 border border-cyan-500/30 rounded-lg flex items-center justify-center text-cyan-400 font-bold'>
-                  2
-                </div>
-                <div>
-                  <p className='font-medium text-cyan-200'>系统自动分析</p>
-                  <p className='text-xs text-slate-500 mt-1'>
-                    收集数据 → 分析舆情 → 生成报告
-                  </p>
-                </div>
-              </div>
-              <div className='flex items-start gap-3'>
-                <div className='shrink-09 w-8 h-8 bg-cyan-500/10 border border-cyan-500/30 rounded-lg flex items-center justify-center text-cyan-400 font-bold'>
-                  3
-                </div>
-                <div>
-                  <p className='font-medium text-cyan-200'>查看结果</p>
-                  <p className='text-xs text-slate-500 mt-1'>
-                    在下方面板实时查看进度和结果
-                  </p>
-                </div>
-              </div>
-            </div>
 
             {/* Max Results Configuration */}
-            <div className='mt-4 pt-4 border-t border-cyan-800/30'>
-              <label className='text-xs text-slate-500 mb-2 block'>
-                ⚙️ 最大采集数量（测试可设置较小值）
+            <div className='mb-3'>
+              <label className='text-xs text-slate-500 mb-1 block'>
+                最大采集数量
               </label>
               <input
                 type='number'
@@ -173,14 +111,11 @@ export function OpinionDashboard() {
                 }
                 className='w-full bg-slate-950 text-cyan-300 border border-cyan-900/50 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50'
               />
-              <p className='text-[10px] text-slate-600 mt-1'>
-                建议：测试时设置 5，生产环境 20-100
-              </p>
             </div>
 
             {/* Batch Size Configuration */}
             <div>
-              <label className='block text-xs font-medium text-cyan-400 mb-2'>
+              <label className='text-xs text-slate-500 mb-1 block'>
                 分批分析大小
               </label>
               <input
@@ -199,35 +134,16 @@ export function OpinionDashboard() {
                 }
                 className='w-full bg-slate-950 text-cyan-300 border border-cyan-900/50 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50'
               />
-              <p className='text-[10px] text-slate-600 mt-1'>
-                每批处理的数据量，避免上下文溢出
-              </p>
-            </div>
-
-            {/* Quick Examples */}
-            <div className='mt-4 pt-4 border-t border-cyan-800/30'>
-              <p className='text-xs text-slate-500 mb-2'>💡 示例关键词：</p>
-              <div className='flex flex-wrap gap-2'>
-                <span className='px-2 py-1 bg-slate-800/50 border border-slate-700 rounded text-xs text-slate-400'>
-                  新能源汽车
-                </span>
-                <span className='px-2 py-1 bg-slate-800/50 border border-slate-700 rounded text-xs text-slate-400'>
-                  人工智能
-                </span>
-                <span className='px-2 py-1 bg-slate-800/50 border border-slate-700 rounded text-xs text-slate-400'>
-                  电商直播
-                </span>
-              </div>
             </div>
           </div>
 
-          {/* Collected Data - 使用 collected_data_summary 实时显示 */}
+          {/* Collected Data */}
           {state.collected_data_summary &&
             state.collected_data_summary.length > 0 && (
-              <div className='bg-slate-900/50 border border-cyan-900/30 rounded-xl p-4 max-h-64 overflow-hidden flex flex-col'>
+              <div className='bg-slate-900/50 border border-cyan-900/30 rounded-xl p-4 max-h-48 overflow-hidden flex flex-col'>
                 <h2 className='text-sm font-semibold text-cyan-300 mb-3 uppercase flex items-center gap-2'>
                   <span className='w-2 h-2 bg-green-400 rounded-full animate-pulse'></span>
-                  Collected Data ({state.collected_data_summary.length})
+                  已收集数据 ({state.collected_data_summary.length})
                 </h2>
                 <div className='flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-cyan-900 scrollbar-track-transparent'>
                   {state.collected_data_summary.map((item, i) => (
@@ -243,7 +159,7 @@ export function OpinionDashboard() {
                       >
                         {item.title}
                         <svg
-                          className='w-3 h-3 shrink-09'
+                          className='w-3 h-3 shrink-0'
                           fill='none'
                           stroke='currentColor'
                           viewBox='0 0 24 24'
@@ -268,7 +184,7 @@ export function OpinionDashboard() {
             )}
 
           {/* System Logs */}
-          <div className='flex-1 bg-black/80 border border-slate-800 rounded-xl p-4 font-mono text-xs overflow-hidden flex flex-col min-h-[200px]'>
+          <div className='bg-black/80 border border-slate-800 rounded-xl p-4 font-mono text-xs overflow-hidden flex flex-col min-h-[150px] max-h-[200px]'>
             <h2 className='text-slate-400 mb-2 pb-2 border-b border-slate-800 flex justify-between'>
               <span>SYSTEM LOGS</span>
               <span className='text-cyan-500 animate-pulse'>● LIVE</span>
@@ -347,7 +263,7 @@ export function OpinionDashboard() {
                   )}
                 </div>
 
-                {/* 收集进度 - 使用 collected_data_summary 实时更新 */}
+                {/* 收集进度 */}
                 {state.collected_data_summary &&
                   state.collected_data_summary.length > 0 && (
                     <div className='w-full max-w-md'>
@@ -426,7 +342,9 @@ export function OpinionDashboard() {
                 {state.status === 'idle' && (
                   <div className='text-center text-sm text-slate-600 max-w-md'>
                     <p>💡 提示：在左侧聊天框输入关键词开始分析</p>
-                    <p className='mt-2'>例如："分析'新能源汽车'的舆情"</p>
+                    <p className='mt-2'>
+                      例如：分析&apos;新能源汽车&apos;的舆情
+                    </p>
                   </div>
                 )}
               </div>

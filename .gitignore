@@ -19,6 +19,7 @@
 
 # production
 /build
+/dist
 
 # misc
 .DS_Store
@@ -53,3 +54,8 @@ bun.lockb
 venv
 .venv
 __pycache__
+
+**/node_modules
+**/.next
+**/out
+frontend/node_modules
