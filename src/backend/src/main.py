@@ -41,7 +41,7 @@ app.add_middleware(
 
 # ===== AG-UI API =====
 # 为每个请求创建新的状态实例，避免状态污染
-@app.post("/api/agent/")
+@app.post("/api/agents")
 async def agent_endpoint(request: Request):
     """AG-UI 端点 - 每次请求创建新的状态"""
     # 创建新的状态实例
@@ -55,104 +55,11 @@ async def agent_endpoint(request: Request):
     )
 
 
-# ===== 静态文件路由 =====
-def get_media_type(suffix: str) -> str:
-    media_types = {
-        '.html': 'text/html',
-        '.js': 'application/javascript',
-        '.css': 'text/css',
-        '.json': 'application/json',
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif',
-        '.svg': 'image/svg+xml',
-        '.ico': 'image/x-icon',
-        '.woff': 'font/woff',
-        '.woff2': 'font/woff2',
-        '.ttf': 'font/ttf',
-        '.map': 'application/json',
-        '.txt': 'text/plain',
-    }
-    return media_types.get(suffix.lower(), 'application/octet-stream')
-
-
-@app.get("/")
-async def serve_index():
-    """主页"""
-    if not STATIC_DIR.exists():
-        return JSONResponse(
-            status_code=500,
-            content={"error": "静态文件目录不存在，请先运行 make build"}
-        )
-    index_path = STATIC_DIR / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path, media_type="text/html")
-    return JSONResponse(status_code=404, content={"error": "index.html 不存在"})
-
-
-@app.get("/_next/{path:path}")
-async def serve_next_static(path: str):
-    """Next.js 静态资源"""
-    file_path = STATIC_DIR / "_next" / path
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(file_path, media_type=get_media_type(file_path.suffix))
-    return JSONResponse(status_code=404, content={"error": "Not found"})
-
-
-@app.get("/favicon.ico")
-async def serve_favicon():
-    """Favicon"""
-    file_path = STATIC_DIR / "favicon.ico"
-    if file_path.exists():
-        return FileResponse(file_path)
-    return JSONResponse(status_code=404, content={"error": "Not found"})
-
-
-@app.get("/{path:path}")
-async def serve_static(path: str):
-    """其他静态文件"""
-    # 跳过 API 路径
-    if path.startswith("api/"):
-        return JSONResponse(status_code=404, content={"error": "API not found"})
-    
-    if not STATIC_DIR.exists():
-        return JSONResponse(status_code=500, content={"error": "静态文件目录不存在"})
-    
-    file_path = STATIC_DIR / path
-    if file_path.is_dir():
-        file_path = file_path / "index.html"
-    
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(file_path, media_type=get_media_type(file_path.suffix))
-    
-    # SPA fallback
-    index_path = STATIC_DIR / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path, media_type="text/html")
-    
-    return JSONResponse(status_code=404, content={"error": f"Not found: {path}"})
-
-
 @app.on_event("startup")
 async def startup():
     print("\n" + "="*60)
     print("🚀 启动舆情分析系统")
     print("="*60)
-    print(f"📍 服务地址: http://localhost:8000")
-    print(f"📍 AG-UI API: http://localhost:8000/api/agent/")
-    print(f"📍 静态文件: {STATIC_DIR}")
-    print("")
-    print("🔗 通信协议: AG-UI (HTTP SSE)")
-    print("   无需 GraphQL，直接使用 SSE 流式通信")
-    
-    if not STATIC_DIR.exists():
-        print(f"\n⚠️  静态文件目录不存在: {STATIC_DIR}")
-        print("   请先运行: make build")
-    else:
-        print(f"\n✅ 静态文件目录已就绪")
-    
-    print("="*60 + "\n")
 
 
 if __name__ == "__main__":

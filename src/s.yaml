@@ -3,7 +3,7 @@ name: agentrun-integration-template
 access: '{{ access }}'
 vars:
   region: '{{ region }}'
-  function_name: '{{ functionName }}'
+  agent_name: '{{ agentRuntimeName }}'
   role: '{{ role }}'
 
 resources:
@@ -14,7 +14,7 @@ resources:
 
       agent:
         # 基本信息
-        name: ${vars.function_name}
+        name: ${vars.agent_name}
         description: 'opinion_analysise'
 
         code:
@@ -61,7 +61,7 @@ resources:
     props:
       region: ${vars.region}
 
-      functionName: ${vars.function_name}_web
+      functionName: ${vars.agent_name}_web
       description: 'opinion_analysise'
 
       runtime: custom
@@ -74,6 +74,7 @@ resources:
       # 资源配置
       cpu: 0.5
       memory: 512
+      diskSize: 512
 
       # 端口和并发
       port: 8000

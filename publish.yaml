@@ -60,7 +60,7 @@ Parameters:
       type: string
       default: ''
       pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
-      description: 填入 Agentrun 中创建好的模型
+      description: 填入 Agentrun 中创建好的模型。为了确保效果，请使用 qwen3-max 模型（放置在模型列表的第一个位置）
     search_tool:
       title: 搜索工具名（建议使用百度搜索工具）
       type: string
