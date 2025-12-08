@@ -1,7 +1,7 @@
 Edition: 3.0.0
 Type: Project
 Name: opinion_analysis
-Version: 0.0.1
+Version: 0.0.2
 Provider:
   - 阿里云
 Description: 基于AgentRun开发的舆情分析系统
@@ -26,9 +26,11 @@ Parameters:
   additionalProperties: false
   required: # 必填项
     - region
-    - functionName
     - role
-    - agentrun_model
+    - modelName
+    - modelServiceName
+    - agentRuntimeName
+    - browserTemplate
   properties:
     region:
       title: 地域
@@ -38,7 +40,7 @@ Parameters:
       enum:
         - cn-beijing
         - cn-hangzhou
-    functionName:
+    agentRuntimeName:
       title: AgentRuntime运行时名称
       type: string
       default: 'opinion_analysis_${default-suffix}'
@@ -55,27 +57,25 @@ Parameters:
         service: FC # 服务账号
         authorities:
           - AliyunAgentRunFullAccess
-    agentrun_model:
-      title: AgentRun 模型
+          - AliyunDevsReadOnlyAccess
+    modelServiceName:
+      title: 模型服务名称
       type: string
-      default: ''
-      pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
-      description: 填入 Agentrun 中创建好的模型。为了确保效果，请使用 qwen3-max 模型（放置在模型列表的第一个位置）
-    search_tool:
-      title: 搜索工具名（建议使用百度搜索工具）
+      pattern: '^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$'
+      description: 填入AgentRun的模型服务名称
+      x-agentrun-model-llm-provider-name: true
+
+    modelName:
+      title: 要使用的模型名称
       type: string
-      default: ''
-      pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
-      description: 填入 Agentrun 中百度搜索工具名称
-    browser_template:
+      description: 为了更好的效果，建议使用 qwen3-max，留空时自动选择列表中的第一个模型
+      x-agentrun-model-llm: true
+    
+    browserTemplate:
       title: Sandbox Browser 模板名，可选
       type: string
       default: ''
       pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
       description: 填入AgentRun中创建好的 Browser 模板
-    code_interpreter_template:
-      title: Sandbox Code Interpreter 模板名，可选
-      type: string
-      default: ''
-      pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
-      description: 填入AgentRun中创建好的 CodeInterpreter 模板
+      x-agentrun-sandbox: browser
+  

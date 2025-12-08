@@ -31,7 +31,7 @@ http
     }
 
     fs.readFile(filePath, function (error, content) {
-      if (!!content) {
+      if (!!content && filePath.endsWith('.js')) {
         content = content
           .toString()
           .replace(

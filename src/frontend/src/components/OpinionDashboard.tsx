@@ -2,30 +2,58 @@
 
 import { AgentState } from '../lib/types';
 import { useAgentState } from '../hooks/useAgentState';
-import { ChatPanel } from './ChatPanel';
-import { useEffect, useRef } from 'react';
+import dynamic from 'next/dynamic';
+import { useEffect, useRef, useState } from 'react';
+import { ENDPOINT } from '@/lib/const';
+
+// 动态导入 VncViewer，禁用 SSR（noVNC 需要浏览器环境）
+const VncViewer = dynamic(
+  () => import('./VncViewer').then((mod) => ({ default: mod.VncViewer })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className='w-full h-full flex items-center justify-center bg-black'>
+        <div className='flex flex-col items-center gap-4'>
+          <div className='w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin'></div>
+          <span className='text-cyan-400 text-sm'>加载 VNC 组件...</span>
+        </div>
+      </div>
+    ),
+  }
+);
+
+// Tab 类型
+type TabType = 'browser' | 'analysis' | 'report';
 
 export function OpinionDashboard() {
-  const { state, setState, running, sendMessage, messages, error } =
+  const { state, setState, running, sendMessage, error } =
     useAgentState<AgentState>({
       name: 'opinion_agent',
-      agentUrl: 'c410d179b056797269a4a2188bdf8a48', // 末尾需要斜杠，因为 AG-UI 挂载在 /api/agent
+      agentUrl: `${ENDPOINT}/api/agent`,
       initialState: {
         keyword: '',
         status: 'idle',
         logs: [],
-        max_results: 5,
-        batch_size: 20,
+        max_results: 50,
         raw_data: [],
         collected_data_summary: [],
-        batch_analyses: [],
         analysis: null,
         report_text: '',
         final_html: '',
+        collection_progress: 0,
+        current_phase: '',
       },
     });
 
+  // 关键词输入
+  const [keyword, setKeyword] = useState('');
   const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // 当前选中的 Tab
+  const [activeTab, setActiveTab] = useState<TabType>('browser');
+
+  // 自动滚动到底部的 ref
+  const analysisEndRef = useRef<HTMLDivElement>(null);
 
   // 调试：监听状态变化
   useEffect(() => {
@@ -33,27 +61,107 @@ export function OpinionDashboard() {
       status: state.status,
       keyword: state.keyword,
       collected_data_summary_count: state.collected_data_summary?.length || 0,
-      raw_data_count: state.raw_data?.length || 0,
-      collected_data_summary: state.collected_data_summary,
+      report_text_length: state.report_text?.length || 0,
+      final_html_length: state.final_html?.length || 0,
     });
   }, [state]);
+
+  // 根据状态自动切换 Tab
+  useEffect(() => {
+    if (state.status === 'collecting' || state.status === 'collected') {
+      setActiveTab('browser');
+    } else if (
+      state.status === 'analyzing' ||
+      state.status === 'analyzed' ||
+      state.status === 'writing' ||
+      state.status === 'written' ||
+      state.status === 'rendering'
+    ) {
+      setActiveTab('analysis');
+    } else if (state.status === 'complete' && state.final_html) {
+      setActiveTab('report');
+    }
+  }, [state.status, state.final_html]);
+
+  // 自动滚动到分析/报告内容底部（流式效果）
+  useEffect(() => {
+    if (activeTab === 'analysis') {
+      analysisEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [state.analysis, state.report_text, activeTab]);
 
   // Auto-scroll logs
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [state.logs]);
 
+  // 开始分析
+  const handleStartAnalysis = () => {
+    if (!keyword.trim() || running) return;
+    sendMessage(`分析'${keyword.trim()}'的舆情`);
+  };
+
+  // 判断当前阶段
+  const isCollectingPhase =
+    state.status === 'collecting' || state.status === 'collected';
+  const isProcessingPhase =
+    state.status === 'analyzing' ||
+    state.status === 'analyzed' ||
+    state.status === 'writing' ||
+    state.status === 'written' ||
+    state.status === 'rendering';
+  const isCompletePhase = state.status === 'complete';
+  const hasContent = isCollectingPhase || isProcessingPhase || isCompletePhase;
+
+  // Tab 配置
+  const tabs: {
+    id: TabType;
+    label: string;
+    icon: string;
+    available: boolean;
+  }[] = [
+    {
+      id: 'browser',
+      label: '浏览器',
+      icon: '🌐',
+      available:
+        isCollectingPhase || (state.collected_data_summary?.length || 0) > 0,
+    },
+    {
+      id: 'analysis',
+      label: '分析',
+      icon: '📊',
+      available:
+        isProcessingPhase ||
+        isCompletePhase ||
+        !!state.analysis ||
+        !!state.report_text,
+    },
+    {
+      id: 'report',
+      label: '报告',
+      icon: '📄',
+      available: isCompletePhase && !!state.final_html,
+    },
+  ];
+
   return (
-    <div className='min-h-screen bg-slate-950 text-cyan-50 font-mono p-4 md:p-8 overflow-hidden flex flex-col'>
+    <div className='h-screen bg-slate-950 text-cyan-50 font-mono p-4 md:p-6 flex flex-col overflow-hidden'>
+      {/* AI 声明 */}
+      <div className='bg-amber-900/30 border border-amber-600/50 rounded-lg px-4 py-2 mb-3 shrink-0'>
+        <p className='text-xs text-amber-300'>
+          ⚠️ <strong>免责声明</strong>
+          ：内容由AI生成，仅供参考，您据此所作判断及操作均由您自行承担责任。
+        </p>
+      </div>
+
       {/* Header */}
-      <header className='mb-8 border-b border-cyan-900/50 pb-4 flex justify-between items-center'>
+      <header className='mb-4 border-b border-cyan-900/50 pb-3 flex justify-between items-center shrink-0'>
         <div>
-          <h1 className='text-2xl md:text-3xl font-bold tracking-wider text-transparent bg-clip-text bg-linear-to-r from-cyan-400 to-blue-600'>
+          <h1 className='text-xl md:text-2xl font-bold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-blue-600'>
             舆情分析系统
           </h1>
-          <p className='text-xs text-slate-500 mt-1'>
-            基于 AG-UI 协议 · 直接 HTTP SSE 通信
-          </p>
+          <p className='text-xs text-slate-500 mt-0.5'>实时浏览器预览</p>
         </div>
         <div className='text-right hidden md:block'>
           <div
@@ -65,139 +173,165 @@ export function OpinionDashboard() {
                 : 'border-cyan-500 text-cyan-400 animate-pulse'
             }`}
           >
-            STATUS: {state.status.toUpperCase()}
+            {state.status === 'idle' && '等待输入'}
+            {state.status === 'collecting' &&
+              `🔍 数据收集中... ${state.collection_progress || 0}%`}
+            {state.status === 'collected' && '✅ 收集完成'}
+            {state.status === 'analyzing' && '📊 分析中...'}
+            {state.status === 'analyzed' && '✅ 分析完成'}
+            {state.status === 'writing' && '📝 撰写中...'}
+            {state.status === 'written' && '✅ 撰写完成'}
+            {state.status === 'rendering' && '🎨 渲染中...'}
+            {state.status === 'complete' && '✅ 完成'}
+            {state.current_phase && ` - ${state.current_phase}`}
           </div>
         </div>
       </header>
 
-      <div className='flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden'>
-        {/* Left Column: Chat & Controls */}
-        <div className='lg:col-span-4 flex flex-col gap-6 overflow-hidden max-h-[calc(100vh-200px)]'>
-          {/* Chat Panel */}
-          <div className='flex-1 min-h-[300px]'>
-            <ChatPanel
-              messages={messages}
-              onSendMessage={sendMessage}
-              running={running}
-              error={error}
-            />
-          </div>
-
-          {/* Configuration */}
-          <div className='bg-linear-to-br from-cyan-900/20 to-blue-900/20 border border-cyan-500/30 p-4 rounded-xl backdrop-blur-sm'>
+      <div className='flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-0'>
+        {/* Left Column: 关键词输入 & 配置 & 搜索记录 & 日志 */}
+        <div className='lg:col-span-3 flex flex-col gap-3 min-h-0 overflow-hidden'>
+          {/* 关键词输入 */}
+          <div className='bg-gradient-to-br from-cyan-900/30 to-blue-900/30 border border-cyan-500/40 p-4 rounded-xl backdrop-blur-sm shrink-0'>
             <h2 className='text-sm font-semibold text-cyan-300 mb-3 uppercase flex items-center gap-2'>
               <span className='w-2 h-2 bg-cyan-400 rounded-full'></span>
-              配置选项
+              舆情分析
             </h2>
 
-            {/* Max Results Configuration */}
-            <div className='mb-3'>
-              <label className='text-xs text-slate-500 mb-1 block'>
-                最大采集数量
-              </label>
-              <input
-                type='number'
-                min='5'
-                max='200'
-                value={state.max_results}
-                onChange={(e) =>
-                  setState({
-                    ...state,
-                    max_results: Math.max(
-                      5,
-                      Math.min(200, parseInt(e.target.value) || 100)
-                    ),
-                  })
-                }
-                className='w-full bg-slate-950 text-cyan-300 border border-cyan-900/50 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50'
-              />
-            </div>
+            <div className='space-y-3'>
+              {/* 关键词输入框 */}
+              <div>
+                <label className='text-xs text-slate-400 mb-1.5 block'>
+                  输入分析关键词
+                </label>
+                <input
+                  type='text'
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleStartAnalysis()}
+                  placeholder='例如：新能源汽车...'
+                  disabled={running}
+                  className='w-full bg-slate-950/80 text-cyan-100 border border-cyan-800/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 disabled:opacity-50 placeholder:text-slate-600'
+                />
+              </div>
 
-            {/* Batch Size Configuration */}
-            <div>
-              <label className='text-xs text-slate-500 mb-1 block'>
-                分批分析大小
-              </label>
-              <input
-                type='number'
-                min='10'
-                max='50'
-                value={state.batch_size}
-                onChange={(e) =>
-                  setState({
-                    ...state,
-                    batch_size: Math.max(
-                      10,
-                      Math.min(50, parseInt(e.target.value) || 20)
-                    ),
-                  })
-                }
-                className='w-full bg-slate-950 text-cyan-300 border border-cyan-900/50 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50'
-              />
+              {/* 最大采集数量 */}
+              <div>
+                <label className='text-xs text-slate-400 mb-1.5 block'>
+                  最大采集数量
+                </label>
+                <input
+                  type='number'
+                  min='5'
+                  max='100'
+                  value={state.max_results}
+                  onChange={(e) =>
+                    setState({
+                      ...state,
+                      max_results: Math.max(
+                        5,
+                        Math.min(100, parseInt(e.target.value) || 50)
+                      ),
+                    })
+                  }
+                  disabled={running}
+                  className='w-full bg-slate-950/80 text-cyan-300 border border-cyan-800/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/50 disabled:opacity-50'
+                />
+              </div>
+
+              {/* 开始分析按钮 */}
+              <button
+                onClick={handleStartAnalysis}
+                disabled={running || !keyword.trim()}
+                className='w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-slate-700 disabled:to-slate-700 disabled:cursor-not-allowed text-white px-4 py-2.5 rounded-lg font-semibold transition-all shadow-lg shadow-cyan-500/20 disabled:shadow-none text-sm'
+              >
+                {running ? (
+                  <span className='flex items-center justify-center gap-2'>
+                    <span className='w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin'></span>
+                    分析中...
+                  </span>
+                ) : (
+                  '开始分析'
+                )}
+              </button>
             </div>
           </div>
 
-          {/* Collected Data */}
+          {/* 错误提示 */}
+          {error && (
+            <div className='bg-red-900/30 border border-red-500/50 rounded-xl px-3 py-2 shrink-0'>
+              <p className='text-xs text-red-400'>❌ {error}</p>
+            </div>
+          )}
+
+          {/* 收集进度 & 搜索记录 */}
           {state.collected_data_summary &&
             state.collected_data_summary.length > 0 && (
-              <div className='bg-slate-900/50 border border-cyan-900/30 rounded-xl p-4 max-h-48 overflow-hidden flex flex-col'>
-                <h2 className='text-sm font-semibold text-cyan-300 mb-3 uppercase flex items-center gap-2'>
-                  <span className='w-2 h-2 bg-green-400 rounded-full animate-pulse'></span>
-                  已收集数据 ({state.collected_data_summary.length})
-                </h2>
-                <div className='flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-thin scrollbar-thumb-cyan-900 scrollbar-track-transparent'>
+              <div className='bg-slate-900/50 border border-cyan-900/30 rounded-xl p-3 flex-1 min-h-0 flex flex-col overflow-hidden'>
+                <div className='flex items-center justify-between mb-2 shrink-0'>
+                  <span className='text-xs text-slate-400 flex items-center gap-1'>
+                    <span className='w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse'></span>
+                    搜索记录
+                  </span>
+                  <span className='text-xs font-bold text-cyan-400'>
+                    {state.collected_data_summary.length} / {state.max_results}
+                  </span>
+                </div>
+                <div className='w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mb-2 shrink-0'>
+                  <div
+                    className='bg-gradient-to-r from-cyan-500 to-blue-500 h-full transition-all duration-500 ease-out'
+                    style={{
+                      width: `${Math.min(
+                        (state.collected_data_summary.length /
+                          state.max_results) *
+                          100,
+                        100
+                      )}%`,
+                    }}
+                  ></div>
+                </div>
+                {/* 搜索结果列表 */}
+                <div className='flex-1 overflow-y-auto space-y-1.5 pr-1'>
                   {state.collected_data_summary.map((item, i) => (
-                    <div
+                    <a
                       key={i}
-                      className='bg-black/40 rounded p-2 border border-slate-800 hover:border-cyan-700 transition-colors'
+                      href={item.url}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                      className='block bg-black/40 rounded p-2 border border-slate-800 hover:border-cyan-700 transition-colors group'
                     >
-                      <a
-                        href={item.url}
-                        target='_blank'
-                        rel='noopener noreferrer'
-                        className='text-cyan-400 hover:text-cyan-300 text-xs font-medium line-clamp-1 flex items-center gap-1'
-                      >
+                      <div className='text-cyan-400 group-hover:text-cyan-300 text-xs font-medium line-clamp-1'>
                         {item.title}
-                        <svg
-                          className='w-3 h-3 shrink-0'
-                          fill='none'
-                          stroke='currentColor'
-                          viewBox='0 0 24 24'
-                        >
-                          <path
-                            strokeLinecap='round'
-                            strokeLinejoin='round'
-                            strokeWidth={2}
-                            d='M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14'
-                          />
-                        </svg>
-                      </a>
-                      <div className='mt-1'>
-                        <span className='text-[9px] text-slate-600 bg-slate-800 px-1.5 py-0.5 rounded'>
-                          {item.source}
-                        </span>
                       </div>
-                    </div>
+                      <div className='text-[10px] text-slate-600 mt-0.5'>
+                        {item.source}
+                      </div>
+                    </a>
                   ))}
                 </div>
               </div>
             )}
 
-          {/* System Logs */}
-          <div className='bg-black/80 border border-slate-800 rounded-xl p-4 font-mono text-xs overflow-hidden flex flex-col min-h-[150px] max-h-[200px]'>
-            <h2 className='text-slate-400 mb-2 pb-2 border-b border-slate-800 flex justify-between'>
-              <span>SYSTEM LOGS</span>
-              <span className='text-cyan-500 animate-pulse'>● LIVE</span>
+          {/* System Logs - 限制最大高度 */}
+          <div className='bg-black/80 border border-slate-800 rounded-xl p-3 font-mono text-xs flex flex-col shrink-0 max-h-[150px]'>
+            <h2 className='text-slate-400 mb-2 pb-1.5 border-b border-slate-800 flex justify-between shrink-0 text-xs'>
+              <span>系统日志</span>
+              {running && (
+                <span className='text-cyan-500 animate-pulse'>● LIVE</span>
+              )}
             </h2>
-            <div className='flex-1 overflow-y-auto space-y-1 pr-2 scrollbar-thin scrollbar-thumb-cyan-900 scrollbar-track-transparent'>
+            <div className='flex-1 overflow-y-auto space-y-0.5 pr-1'>
               {state.logs.length === 0 && (
-                <span className='text-slate-700 italic'>
-                  System idle. Waiting for instructions...
+                <span className='text-slate-700 italic text-xs'>
+                  等待开始...
                 </span>
               )}
-              {state.logs.map((log, i) => (
-                <div key={i} className='text-slate-300 break-words'>
-                  <span className='text-cyan-700 mr-2'>{'>'}</span>
+              {state.logs.slice(-15).map((log, i) => (
+                <div
+                  key={i}
+                  className='text-slate-400 break-words leading-relaxed text-xs'
+                >
+                  <span className='text-cyan-700 mr-1'>›</span>
                   {log}
                 </div>
               ))}
@@ -206,147 +340,259 @@ export function OpinionDashboard() {
           </div>
         </div>
 
-        {/* Right Column: Visualization / Report */}
-        <div className='lg:col-span-8 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden relative flex flex-col'>
-          <div className='absolute inset-0 bg-[linear-gradient(rgba(6,182,212,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(6,182,212,0.05)_1px,transparent_1px)] bg-[size:20px_20px] pointer-events-none'></div>
+        {/* Right Column: 主内容区域 */}
+        <div className='lg:col-span-9 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden relative flex flex-col min-h-0'>
+          <div className='absolute inset-0 bg-[linear-gradient(rgba(6,182,212,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(6,182,212,0.03)_1px,transparent_1px)] bg-[size:20px_20px] pointer-events-none'></div>
 
-          <div className='p-4 border-b border-slate-800 bg-slate-950/50 backdrop-blur flex justify-between items-center z-10'>
-            <h2 className='text-sm font-bold text-white flex items-center gap-2'>
-              REPORT VIEW
+          {/* Tab 栏 */}
+          {hasContent && (
+            <div className='p-2 border-b border-slate-800 bg-slate-950/50 backdrop-blur flex items-center gap-1 z-10 shrink-0'>
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => tab.available && setActiveTab(tab.id)}
+                  disabled={!tab.available}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+                    activeTab === tab.id
+                      ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/50'
+                      : tab.available
+                      ? 'text-slate-400 hover:text-slate-300 hover:bg-slate-800/50'
+                      : 'text-slate-600 cursor-not-allowed'
+                  }`}
+                >
+                  <span>{tab.icon}</span>
+                  <span>{tab.label}</span>
+                </button>
+              ))}
               {state.keyword && (
-                <span className='text-cyan-500 px-2 py-0.5 bg-cyan-950/50 rounded text-xs border border-cyan-900'>
-                  TARGET: {state.keyword}
+                <span className='ml-auto text-cyan-500 px-2 py-0.5 bg-cyan-950/50 rounded text-xs border border-cyan-900'>
+                  {state.keyword}
                 </span>
               )}
-            </h2>
-          </div>
+            </div>
+          )}
 
-          <div className='flex-1 overflow-y-auto bg-white/5 p-4 relative z-0'>
-            {state.final_html ? (
-              <div className='bg-white w-full h-full min-h-[600px] rounded shadow-2xl overflow-hidden'>
+          {/* 主内容区域 */}
+          <div className='flex-1 overflow-hidden relative z-0'>
+            {/* Tab: 浏览器预览 (VNC) */}
+            {activeTab === 'browser' && hasContent && (
+              <VncViewer
+                className='w-full h-full'
+                pollingInterval={10000}
+                active={isCollectingPhase}
+              />
+            )}
+
+            {/* Tab: 分析与撰写 */}
+            {activeTab === 'analysis' && (
+              <div className='h-full overflow-y-auto p-4'>
+                {/* 分析摘要 */}
+                {state.analysis && (
+                  <div className='mb-4 bg-slate-800/50 rounded-xl p-4 border border-slate-700'>
+                    <h3 className='text-sm font-semibold text-cyan-400 mb-3'>
+                      📊 分析结果
+                    </h3>
+                    <div className='grid grid-cols-3 gap-3 mb-3'>
+                      <div className='text-center p-2 bg-green-900/20 rounded-lg border border-green-800/30'>
+                        <div className='text-xl font-bold text-green-400'>
+                          {state.analysis.sentiment_distribution?.['正面'] || 0}
+                          %
+                        </div>
+                        <div className='text-xs text-slate-400'>正面</div>
+                      </div>
+                      <div className='text-center p-2 bg-yellow-900/20 rounded-lg border border-yellow-800/30'>
+                        <div className='text-xl font-bold text-yellow-400'>
+                          {state.analysis.sentiment_distribution?.['中性'] || 0}
+                          %
+                        </div>
+                        <div className='text-xs text-slate-400'>中性</div>
+                      </div>
+                      <div className='text-center p-2 bg-red-900/20 rounded-lg border border-red-800/30'>
+                        <div className='text-xl font-bold text-red-400'>
+                          {state.analysis.sentiment_distribution?.['负面'] || 0}
+                          %
+                        </div>
+                        <div className='text-xs text-slate-400'>负面</div>
+                      </div>
+                    </div>
+                    {state.analysis.keywords &&
+                      state.analysis.keywords.length > 0 && (
+                        <div className='flex flex-wrap gap-1.5 mb-3'>
+                          {state.analysis.keywords.map((kw, i) => (
+                            <span
+                              key={i}
+                              className='px-2 py-0.5 bg-cyan-900/30 text-cyan-300 text-xs rounded-full border border-cyan-800/50'
+                            >
+                              {kw}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    {state.analysis.summary && (
+                      <p className='text-sm text-slate-300 leading-relaxed mb-3'>
+                        {state.analysis.summary}
+                      </p>
+                    )}
+                    {/* 风险评估 */}
+                    {state.analysis.risk_assessment && (
+                      <div className='mt-3 pt-3 border-t border-slate-700'>
+                        <h4 className='text-xs font-semibold text-slate-400 mb-2'>
+                          风险评估
+                        </h4>
+                        <div className='flex gap-4 text-xs'>
+                          <span className='text-slate-300'>
+                            传播风险:{' '}
+                            <span
+                              className={
+                                state.analysis.risk_assessment.spread_risk ===
+                                '高'
+                                  ? 'text-red-400'
+                                  : 'text-yellow-400'
+                              }
+                            >
+                              {state.analysis.risk_assessment.spread_risk ||
+                                '中'}
+                            </span>
+                          </span>
+                          <span className='text-slate-300'>
+                            声誉风险:{' '}
+                            <span
+                              className={
+                                state.analysis.risk_assessment
+                                  .reputation_risk === '高'
+                                  ? 'text-red-400'
+                                  : 'text-yellow-400'
+                              }
+                            >
+                              {state.analysis.risk_assessment.reputation_risk ||
+                                '中'}
+                            </span>
+                          </span>
+                          <span className='text-slate-300'>
+                            趋势:{' '}
+                            <span className='text-cyan-400'>
+                              {state.analysis.risk_assessment.trend || '平稳'}
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    {/* 关键观点 */}
+                    {state.analysis.key_opinions &&
+                      state.analysis.key_opinions.length > 0 && (
+                        <div className='mt-3 pt-3 border-t border-slate-700'>
+                          <h4 className='text-xs font-semibold text-slate-400 mb-2'>
+                            关键观点
+                          </h4>
+                          <div className='space-y-2'>
+                            {state.analysis.key_opinions
+                              .slice(0, 3)
+                              .map((op, i) => (
+                                <div
+                                  key={i}
+                                  className='text-xs bg-slate-900/50 rounded p-2'
+                                >
+                                  <span
+                                    className={`inline-block px-1.5 py-0.5 rounded text-[10px] mr-2 ${
+                                      op.sentiment === '正面'
+                                        ? 'bg-green-900/50 text-green-400'
+                                        : op.sentiment === '负面'
+                                        ? 'bg-red-900/50 text-red-400'
+                                        : 'bg-slate-700 text-slate-400'
+                                    }`}
+                                  >
+                                    {op.sentiment}
+                                  </span>
+                                  <span className='text-slate-300'>
+                                    {op.viewpoint}
+                                  </span>
+                                  <span className='text-slate-500 ml-2'>
+                                    [{op.source}]
+                                  </span>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                )}
+
+                {/* 报告内容（流式显示） */}
+                {state.report_text && (
+                  <div className='bg-slate-800/30 rounded-xl p-4 border border-slate-700'>
+                    <h3 className='text-sm font-semibold text-cyan-400 mb-3 flex items-center gap-2'>
+                      📝 报告内容
+                      {(state.status === 'writing' ||
+                        state.status === 'rendering') && (
+                        <span className='text-xs text-slate-500 animate-pulse'>
+                          撰写中...
+                        </span>
+                      )}
+                    </h3>
+                    <div className='prose prose-invert prose-sm max-w-none'>
+                      <pre className='whitespace-pre-wrap text-sm text-slate-300 leading-relaxed font-sans bg-transparent p-0 m-0'>
+                        {state.report_text}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+
+                {/* 加载指示器 */}
+                {!state.analysis && !state.report_text && (
+                  <div className='flex flex-col items-center justify-center h-full gap-4'>
+                    <div className='w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin'></div>
+                    <p className='text-slate-400'>
+                      {state.status === 'analyzing' ||
+                      state.status === 'analyzed'
+                        ? '正在分析数据...'
+                        : '正在撰写报告...'}
+                    </p>
+                  </div>
+                )}
+                <div ref={analysisEndRef} />
+              </div>
+            )}
+
+            {/* Tab: 最终报告 */}
+            {activeTab === 'report' && state.final_html && (
+              <div className='w-full h-full bg-white'>
                 <iframe
                   srcDoc={state.final_html}
                   className='w-full h-full border-0'
                   title='Analysis Report'
                 />
               </div>
-            ) : (
+            )}
+
+            {/* 空闲状态 */}
+            {state.status === 'idle' && (
               <div className='h-full flex flex-col items-center justify-center text-slate-400 gap-6 p-8'>
-                {/* 状态指示器 */}
                 <div className='w-20 h-20 relative'>
-                  <div className='absolute inset-0 border-4 border-slate-700 rounded-full'></div>
-                  <div className='absolute inset-0 border-4 border-t-cyan-500 rounded-full animate-spin'></div>
+                  <div className='absolute inset-0 border-4 border-slate-800 rounded-full'></div>
                   <div className='absolute inset-0 flex items-center justify-center'>
-                    <div className='w-12 h-12 bg-cyan-500/20 rounded-full animate-pulse'></div>
+                    <svg
+                      className='w-10 h-10 text-slate-700'
+                      fill='none'
+                      stroke='currentColor'
+                      viewBox='0 0 24 24'
+                    >
+                      <path
+                        strokeLinecap='round'
+                        strokeLinejoin='round'
+                        strokeWidth={1.5}
+                        d='M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z'
+                      />
+                    </svg>
                   </div>
                 </div>
-
-                {/* 当前状态 */}
                 <div className='text-center'>
-                  <p className='text-xl font-semibold text-white mb-2'>
-                    {state.status === 'idle' && '等待开始分析...'}
-                    {state.status === 'collecting' && '🔍 正在收集数据...'}
-                    {state.status === 'collected' && '✅ 数据收集完成'}
-                    {state.status === 'analyzing' && '📊 正在分析数据...'}
-                    {state.status === 'analyzed' && '✅ 数据分析完成'}
-                    {state.status === 'writing' && '📝 正在撰写报告...'}
-                    {state.status === 'written' && '✅ 报告撰写完成'}
-                    {state.status === 'rendering' && '🎨 正在渲染 HTML...'}
+                  <p className='text-lg font-semibold text-white mb-2'>
+                    开始舆情分析
                   </p>
-
-                  {/* 进度提示 */}
-                  {state.keyword && (
-                    <p className='text-sm text-slate-500'>
-                      关键词:{' '}
-                      <span className='text-cyan-400'>{state.keyword}</span>
-                    </p>
-                  )}
+                  <p className='text-sm text-slate-500 max-w-md'>
+                    在左侧输入关键词，点击&ldquo;开始分析&rdquo;按钮
+                  </p>
                 </div>
-
-                {/* 收集进度 */}
-                {state.collected_data_summary &&
-                  state.collected_data_summary.length > 0 && (
-                    <div className='w-full max-w-md'>
-                      <div className='bg-slate-800/50 rounded-lg p-4 border border-slate-700'>
-                        <div className='flex items-center justify-between mb-2'>
-                          <span className='text-sm text-slate-400'>
-                            已收集数据
-                          </span>
-                          <span className='text-lg font-bold text-cyan-400'>
-                            {state.collected_data_summary.length} /{' '}
-                            {state.max_results}
-                          </span>
-                        </div>
-                        <div className='w-full bg-slate-700 rounded-full h-2 overflow-hidden'>
-                          <div
-                            className='bg-gradient-to-r from-cyan-500 to-blue-500 h-full transition-all duration-500 ease-out'
-                            style={{
-                              width: `${Math.min(
-                                (state.collected_data_summary.length /
-                                  state.max_results) *
-                                  100,
-                                100
-                              )}%`,
-                            }}
-                          ></div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                {/* 分析进度 */}
-                {state.analysis && (
-                  <div className='w-full max-w-md'>
-                    <div className='bg-slate-800/50 rounded-lg p-4 border border-slate-700'>
-                      <div className='text-sm text-slate-400 mb-2'>
-                        分析结果预览
-                      </div>
-                      <div className='grid grid-cols-3 gap-3 text-center'>
-                        <div>
-                          <div className='text-lg font-bold text-green-400'>
-                            {state.analysis.sentiment_distribution?.['正面'] ||
-                              0}
-                            %
-                          </div>
-                          <div className='text-xs text-slate-500'>正面</div>
-                        </div>
-                        <div>
-                          <div className='text-lg font-bold text-yellow-400'>
-                            {state.analysis.sentiment_distribution?.['中性'] ||
-                              0}
-                            %
-                          </div>
-                          <div className='text-xs text-slate-500'>中性</div>
-                        </div>
-                        <div>
-                          <div className='text-lg font-bold text-red-400'>
-                            {state.analysis.sentiment_distribution?.['负面'] ||
-                              0}
-                            %
-                          </div>
-                          <div className='text-xs text-slate-500'>负面</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* 最新日志 */}
-                {state.logs.length > 0 && (
-                  <div className='text-xs text-slate-600 max-w-md text-center'>
-                    {state.logs[state.logs.length - 1]}
-                  </div>
-                )}
-
-                {/* 提示信息 */}
-                {state.status === 'idle' && (
-                  <div className='text-center text-sm text-slate-600 max-w-md'>
-                    <p>💡 提示：在左侧聊天框输入关键词开始分析</p>
-                    <p className='mt-2'>
-                      例如：分析&apos;新能源汽车&apos;的舆情
-                    </p>
-                  </div>
-                )}
               </div>
             )}
           </div>

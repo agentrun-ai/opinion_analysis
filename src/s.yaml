@@ -39,15 +39,12 @@ resources:
         environmentVariables:
           PYTHONPATH: /code/python:/opt/python:/code:/code/python
 
-          AGENTRUN_MODEL_NAME: '{{ agentrun_model }}'
-          {{ if search_tool }}AGENTRUN_SEARCH_TOOL_NAME: '{{ search_tool }}'{{ /if }}
-          {{ if browser_template }}AGENTRUN_BROWSER_SANDBOX_NAME: '{{ browser_template }}'{{ /if }}
-          {{ if code_interpreter_template }}AGENTRUN_CODE_INTERPRETER_SANDBOX_NAME: '{{ code_interpreter_template }}'{{ /if }}
-
+          AGENTRUN_MODEL_NAME: '{{ modelServiceName }}'
+          MODEL_NAME: '{{ modelName }}'
+          AGENTRUN_BROWSER_SANDBOX_NAME: '{{ browserTemplate }}'
+          
         # 日志配置
-        # logConfig:
-        #   project: ws-testhz
-        #   logstore: acs-ecs-system
+        logConfig: auto
         role: ${vars.role}
 
         # 端点配置
@@ -56,7 +53,7 @@ resources:
             version: LATEST
             description: '生产环境端点'
 
-  web:
+  main_web:
     component: fc3
     props:
       region: ${vars.region}
@@ -84,7 +81,7 @@ resources:
       internetAccess: true
 
       environmentVariables:
-        ENDPOINT: '${resources.opinion_analysis.output.agent.endpoints.0.url}/api/agents'
+        ENDPOINT: '${resources.opinion_analysis.output.agent.endpoints.0.url}'
 
       customDomain:
         protocol: 'HTTP'

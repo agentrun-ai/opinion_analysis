@@ -2,9 +2,9 @@ opinion_analysis:
   default:
     languages:
       - python3.12
-    cache:
-      paths:
-        - "~/.cache"
+    # cache:
+    #   paths:
+    #     - "~/.cache"
     steps:
       - run: mkdir -p python
         path: ./backend

@@ -8,12 +8,12 @@ import type {
   RunErrorEvent,
   Message,
 } from '@ag-ui/client';
+import { ENDPOINT } from '@/lib/const';
 
 /**
- * 直接使用 AG-UI 协议的 Agent 状态 Hook
- * 替代 CopilotKit 的 useCoAgent，避免 GraphQL 依赖
+ * 使用 AG-UI 协议的 Agent 状态 Hook
  *
- * AG-UI 协议使用 HTTP SSE 进行通信，不需要 GraphQL
+ * 直接使用 AG-UI 的 STATE_SNAPSHOT 事件进行状态同步
  */
 
 function randomUUID() {
@@ -36,21 +36,19 @@ interface UseAgentStateResult<T> {
   sendMessage: (message: string) => Promise<void>;
   messages: Message[];
   error: string | null;
+  runId: string | null;
 }
 
 export function useAgentState<T extends Record<string, unknown>>(
   options: UseAgentStateOptions<T>
 ): UseAgentStateResult<T> {
-  const {
-    name,
-    initialState,
-    agentUrl = 'c410d179b056797269a4a2188bdf8a48',
-  } = options;
+  const { name, initialState, agentUrl = `${ENDPOINT}/api/agent` } = options;
 
   const [state, setStateInternal] = useState<T>(initialState);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [runId, setRunId] = useState<string | null>(null);
 
   const stateRef = useRef<T>(initialState);
   const isUnmountedRef = useRef(false);
@@ -67,7 +65,6 @@ export function useAgentState<T extends Record<string, unknown>>(
 
     return () => {
       isUnmountedRef.current = true;
-      // 中止正在进行的请求
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -120,9 +117,14 @@ export function useAgentState<T extends Record<string, unknown>>(
       }
 
       const subscriber: AgentSubscriber = {
+        onRunStartedEvent: ({ event }) => {
+          if (isUnmountedRef.current) return;
+          console.log('🚀 Run started:', event.runId);
+          setRunId(event.runId);
+        },
         onStateSnapshotEvent: ({ event }: { event: StateSnapshotEvent }) => {
           if (isUnmountedRef.current) return;
-          console.log('📸 State snapshot:', event.snapshot);
+          console.log('📸 STATE_SNAPSHOT 收到:', event.snapshot);
           const snapshot = event.snapshot as T;
           if (snapshot) {
             setStateInternal(snapshot);
@@ -141,7 +143,6 @@ export function useAgentState<T extends Record<string, unknown>>(
         },
         onTextMessageEndEvent: ({ textMessageBuffer }) => {
           if (isUnmountedRef.current) return;
-          // 添加 agent 回复到消息列表
           const agentMessage: Message = {
             id: randomUUID(),
             role: 'assistant',
@@ -170,12 +171,8 @@ export function useAgentState<T extends Record<string, unknown>>(
         if (isUnmountedRef.current) return;
 
         const error = err as Error;
-        // 忽略 AbortError，这通常是正常的取消操作（组件卸载）
         if (error.name === 'AbortError') {
-          console.log(
-            '🛑 Request aborted (component unmounted or user cancelled)'
-          );
-          // 不设置错误状态，因为这是预期的行为
+          console.log('🛑 Request aborted');
         } else {
           setError(error.message || '未知错误');
           console.error('Agent error:', err);
@@ -197,5 +194,6 @@ export function useAgentState<T extends Record<string, unknown>>(
     sendMessage,
     messages,
     error,
+    runId,
   };
 }
