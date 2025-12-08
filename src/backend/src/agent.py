@@ -168,6 +168,56 @@ async def get_browser_sandbox(sandbox_id: str = None) -> Optional[BrowserSandbox
         return None
 
 
+async def remove_sandbox(sandbox_id: str) -> None:
+    """从管理列表中移除指定的 Sandbox"""
+    async with _sandbox_lock:
+        if sandbox_id in _sandboxes:
+            del _sandboxes[sandbox_id]
+            print(f"🗑️ Sandbox 已从管理列表中移除: {sandbox_id[:8]}...")
+
+
+async def recreate_sandbox_if_closed(sandbox_id: str, error_message: str) -> Optional[BrowserSandbox]:
+    """检测 sandbox 是否已关闭，如果关闭则重新创建
+    
+    Args:
+        sandbox_id: 当前使用的 sandbox ID
+        error_message: 错误信息
+    
+    Returns:
+        新创建的 sandbox 实例，如果不需要重建则返回 None
+    """
+    # 检测 sandbox 关闭相关的错误
+    closed_error_patterns = [
+        "Target page, context or browser has been closed",
+        "Browser has been closed",
+        "Target closed",
+        "Connection closed",
+        "Session closed",
+        "Page closed",
+        "Context closed",
+    ]
+    
+    is_closed_error = any(pattern.lower() in error_message.lower() for pattern in closed_error_patterns)
+    
+    if is_closed_error:
+        print(f"⚠️ 检测到 Sandbox 已关闭: {error_message[:100]}")
+        print(f"🔄 正在重新创建 Sandbox...")
+        
+        # 从管理列表中移除旧的 sandbox
+        await remove_sandbox(sandbox_id)
+        
+        # 创建新的 sandbox
+        new_sandbox = await create_browser_sandbox()
+        if new_sandbox:
+            print(f"✅ 新 Sandbox 创建成功: {new_sandbox.sandbox_id[:8]}...")
+            return new_sandbox
+        else:
+            print(f"❌ 创建新 Sandbox 失败")
+            return None
+    
+    return None
+
+
 async def get_all_sandboxes() -> List[Dict[str, Any]]:
     """获取所有 Sandbox 信息"""
     from urllib.parse import urlparse, parse_qs, urlencode
@@ -701,6 +751,8 @@ async def collect_data(
             query_index = 0
             max_retries = 5
             retry_count = 0
+            sandbox_retry_count = 0  # Sandbox 重建次数
+            max_sandbox_retries = 3  # 最多重建 3 次
             
             while len(collected) < target_count:
                 if query_index >= len(queries):
@@ -983,14 +1035,54 @@ async def collect_data(
                         await push_state_event(run_id, state)
                     
                 except Exception as e:
-                    print(f"⚠️ 搜索失败: {e}")
-                    state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 搜索失败: {str(e)[:50]}")
+                    error_msg = str(e)
+                    print(f"⚠️ 搜索失败: {error_msg}")
+                    state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 搜索失败: {error_msg[:50]}")
+                    
+                    # 检测是否是 sandbox 关闭错误
+                    if sandbox_retry_count < max_sandbox_retries:
+                        new_sandbox = await recreate_sandbox_if_closed(sandbox.sandbox_id, error_msg)
+                        if new_sandbox:
+                            sandbox_retry_count += 1
+                            sandbox = new_sandbox
+                            state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Sandbox 已重建 ({sandbox_retry_count}/{max_sandbox_retries})")
+                            
+                            # 更新 Sandbox 信息到状态
+                            sandbox_info = await get_all_sandboxes()
+                            state.sandboxes = [SandboxInfo(**s) for s in sandbox_info]
+                            state.active_sandbox_id = sandbox.sandbox_id
+                            state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🌐 新浏览器已就绪: {sandbox.sandbox_id[:8]}...")
+                            
+                            # 推送新的 sandbox 状态到前端
+                            await push_state_event(run_id, state)
+                            
+                            # 重新连接浏览器
+                            try:
+                                browser = await playwright.chromium.connect_over_cdp(sandbox.get_cdp_url())
+                                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                                page = context.pages[0] if context.pages else await context.new_page()
+                                print(f"✅ 已重新连接到新 Sandbox")
+                                continue  # 继续搜索循环
+                            except Exception as reconnect_error:
+                                print(f"❌ 重新连接 Sandbox 失败: {reconnect_error}")
+                                state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 重新连接失败: {str(reconnect_error)[:50]}")
                 
                 await asyncio.sleep(1)
     
     except Exception as e:
-        state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 数据收集出错: {str(e)[:100]}")
+        error_msg = str(e)
+        state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ 数据收集出错: {error_msg[:100]}")
         print(f"❌ 数据收集出错: {e}")
+        
+        # 在顶层异常处理中也检测 sandbox 关闭错误
+        new_sandbox = await recreate_sandbox_if_closed(state.active_sandbox_id, error_msg)
+        if new_sandbox:
+            # 更新状态中的 sandbox 信息
+            sandbox_info = await get_all_sandboxes()
+            state.sandboxes = [SandboxInfo(**s) for s in sandbox_info]
+            state.active_sandbox_id = new_sandbox.sandbox_id
+            state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 Sandbox 已重建: {new_sandbox.sandbox_id[:8]}...")
+            await push_state_event(run_id, state)
     
     # 按相关性排序
     state.raw_data.sort(key=lambda x: x.relevance_score, reverse=True)
@@ -1749,14 +1841,14 @@ async def render_html(
     """
     state = ctx.deps.state
     run_id = ctx.deps.run_id  # 从 deps 获取运行 ID
-    
+
     state.status = "rendering"
     state.current_phase = "HTML 渲染"
     state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎨 渲染 HTML 和图表...")
-    
+
     # 推送初始状态
     await push_state_event(run_id, state)
-    
+
     try:
         import markdown
         report_html = markdown.markdown(
@@ -1766,10 +1858,10 @@ async def render_html(
     except ImportError:
         report_html = state.report_text.replace("\n\n", "</p><p>").replace("\n", "<br>")
         report_html = f"<p>{report_html}</p>"
-    
+
     # 准备图表数据
     analysis = state.analysis or AnalysisResult()
-    
+
     # 情感分布数据
     sentiment_data = analysis.sentiment_distribution or {"正面": 33, "中性": 34, "负面": 33}
     sentiment_colors = {
@@ -1777,23 +1869,23 @@ async def render_html(
         "中性": "#1890ff", 
         "负面": "#ff4d4f"
     }
-    
+
     # 热度趋势数据
     heat_trend = analysis.heat_trend or [50, 50, 50, 50, 50, 50, 50]
     heat_labels = ["Day 1", "Day 2", "Day 3", "Day 4", "Day 5", "Day 6", "Day 7"]
-    
+
     # 关键词数据（用于词云）
     keywords = analysis.keywords or [state.keyword]
     keyword_weights = []
     for i, kw in enumerate(keywords[:20]):
         weight = 100 - i * 5  # 权重递减
         keyword_weights.append({"name": kw, "value": max(weight, 20)})
-    
+
     # 来源分布数据
     source_stats = {}
     for item in state.raw_data:
         source_stats[item.source] = source_stats.get(item.source, 0) + 1
-    
+
     state.final_html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1986,8 +2078,16 @@ async def render_html(
     </div>
     
     <script>
-        // 情感分布饼图
-        var sentimentChart = echarts.init(document.getElementById('sentimentChart'));
+        // 等待 ECharts 加载完成后再初始化图表
+        function initCharts() {{
+            if (typeof echarts === 'undefined') {{
+                // ECharts 还未加载，等待后重试
+                setTimeout(initCharts, 100);
+                return;
+            }}
+            
+            // 情感分布饼图
+            var sentimentChart = echarts.init(document.getElementById('sentimentChart'));
         sentimentChart.setOption({{
             tooltip: {{ trigger: 'item', formatter: '{{b}}: {{c}}% ({{d}}%)' }},
             legend: {{ bottom: '5%', left: 'center' }},
@@ -2110,14 +2210,22 @@ async def render_html(
             }}]
         }});
         
-        // 响应式调整
-        window.addEventListener('resize', function() {{
-            sentimentChart.resize();
-            heatChart.resize();
-            sourceChart.resize();
-            riskChart.resize();
-            wordcloudChart.resize();
-        }});
+            // 响应式调整
+            window.addEventListener('resize', function() {{
+                sentimentChart.resize();
+                heatChart.resize();
+                sourceChart.resize();
+                riskChart.resize();
+                wordcloudChart.resize();
+            }});
+        }}
+        
+        // 页面加载完成后初始化图表
+        if (document.readyState === 'complete') {{
+            initCharts();
+        }} else {{
+            window.addEventListener('load', initCharts);
+        }}
     </script>
 </body>
 </html>"""
@@ -2125,8 +2233,8 @@ async def render_html(
     state.status = "complete"
     state.current_phase = "分析完成"
     state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 舆情分析完成")
-    
+
     # 发送最终状态
     await push_state_event(run_id, state)
-    
+
     return "HTML 渲染完成"

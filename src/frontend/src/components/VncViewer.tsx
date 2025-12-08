@@ -2,11 +2,16 @@
 
 import { ENDPOINT } from '@/lib/const';
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { SandboxInfo } from '@/lib/types';
 
 interface VncViewerProps {
   className?: string;
   pollingInterval?: number;
   active?: boolean;
+  // 新增：支持多 sandbox 切换
+  sandboxes?: SandboxInfo[];
+  activeSandboxId?: string;
+  onSandboxSelect?: (sandboxId: string) => void;
 }
 
 interface VncState {
@@ -28,6 +33,9 @@ export function VncViewer({
   className = '',
   pollingInterval = 10000,
   active = true,
+  sandboxes = [],
+  activeSandboxId,
+  onSandboxSelect,
 }: VncViewerProps) {
   const screenRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,6 +46,9 @@ export function VncViewer({
   const [rfbLoaded, setRfbLoaded] = useState(!!cachedRFB);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const lastUrlRef = useRef<string | null>(null);
+  
+  // 是否显示 sandbox 选择器
+  const [showSandboxSelector, setShowSandboxSelector] = useState(false);
 
   // 加载本地 noVNC RFB 模块
   useEffect(() => {
@@ -226,7 +237,27 @@ export function VncViewer({
     }
 
     try {
-      console.log('🔍 Fetching VNC URL...');
+      // 如果有传入的 sandboxes 和 activeSandboxId，优先使用
+      if (sandboxes.length > 0 && activeSandboxId) {
+        const targetSandbox = sandboxes.find(s => s.sandbox_id === activeSandboxId);
+        if (targetSandbox && targetSandbox.livestream_url) {
+          console.log('🔍 Using sandbox from props:', activeSandboxId.slice(0, 8));
+          setSandboxId(targetSandbox.sandbox_id);
+          
+          const needReconnect =
+            targetSandbox.livestream_url !== lastUrlRef.current ||
+            status === 'disconnected' ||
+            status === 'error';
+
+          if (needReconnect) {
+            console.log('🔄 URL changed or need reconnect, connecting...');
+            connectVnc(targetSandbox.livestream_url);
+          }
+          return;
+        }
+      }
+
+      console.log('🔍 Fetching VNC URL from API...');
       const response = await fetch(`${ENDPOINT}/api/browser/vnc`);
       const data: VncState = await response.json();
       console.log('📡 VNC API response:', data);
@@ -256,7 +287,7 @@ export function VncViewer({
       setError('无法获取 VNC URL');
       setStatus('error');
     }
-  }, [connectVnc, status, rfbLoaded]);
+  }, [connectVnc, status, rfbLoaded, sandboxes, activeSandboxId]);
 
   // 轮询 URL
   useEffect(() => {
@@ -301,6 +332,27 @@ export function VncViewer({
     fetchVncUrl();
   };
 
+  // 处理 sandbox 切换
+  const handleSandboxClick = (selectedSandboxId: string) => {
+    if (onSandboxSelect) {
+      onSandboxSelect(selectedSandboxId);
+    }
+    setShowSandboxSelector(false);
+    // 强制重连到新的 sandbox
+    cleanupRfb();
+    lastUrlRef.current = null;
+  };
+
+  // 当 activeSandboxId 变化时，触发重连
+  useEffect(() => {
+    if (activeSandboxId && activeSandboxId !== sandboxId && rfbLoaded) {
+      console.log('🔄 Active sandbox changed, reconnecting...');
+      cleanupRfb();
+      lastUrlRef.current = null;
+      fetchVncUrl();
+    }
+  }, [activeSandboxId, sandboxId, rfbLoaded, cleanupRfb, fetchVncUrl]);
+
   return (
     <div className={`relative bg-black ${className}`}>
       {/* 状态栏 */}
@@ -334,13 +386,66 @@ export function VncViewer({
           >
             🔄
           </button>
+          
+          {/* Sandbox ID - 可点击切换 */}
           {sandboxId && (
-            <span className='text-xs text-slate-600'>
-              {sandboxId.slice(0, 8)}...
-            </span>
+            <div className='relative'>
+              <button
+                onClick={() => setShowSandboxSelector(!showSandboxSelector)}
+                className={`text-xs px-2 py-1 rounded transition-colors ${
+                  sandboxes.length > 1
+                    ? 'text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/30 cursor-pointer'
+                    : 'text-slate-600 cursor-default'
+                }`}
+                title={sandboxes.length > 1 ? '点击切换 Sandbox' : 'Sandbox ID'}
+              >
+                {sandboxId.slice(0, 8)}...
+                {sandboxes.length > 1 && (
+                  <span className='ml-1 text-cyan-500'>▼</span>
+                )}
+              </button>
+              
+              {/* Sandbox 选择器下拉菜单 */}
+              {showSandboxSelector && sandboxes.length > 1 && (
+                <div className='absolute top-full right-0 mt-1 bg-slate-900 border border-cyan-800/50 rounded-lg shadow-xl z-20 min-w-[200px] overflow-hidden'>
+                  <div className='px-3 py-2 text-xs text-slate-400 border-b border-slate-800'>
+                    选择 Sandbox ({sandboxes.length} 个可用)
+                  </div>
+                  {sandboxes.map((sb) => (
+                    <button
+                      key={sb.sandbox_id}
+                      onClick={() => handleSandboxClick(sb.sandbox_id)}
+                      className={`w-full px-3 py-2 text-left text-xs transition-colors flex items-center gap-2 ${
+                        sb.sandbox_id === (activeSandboxId || sandboxId)
+                          ? 'bg-cyan-900/30 text-cyan-400'
+                          : 'text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          sb.active ? 'bg-green-500' : 'bg-slate-500'
+                        }`}
+                      ></span>
+                      <span className='font-mono'>{sb.sandbox_id.slice(0, 12)}...</span>
+                      {sb.sandbox_id === (activeSandboxId || sandboxId) && (
+                        <span className='ml-auto text-cyan-500'>✓</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
+      
+      {/* 点击其他地方关闭选择器 */}
+      {showSandboxSelector && (
+        <div
+          className='fixed inset-0 z-10'
+          onClick={() => setShowSandboxSelector(false)}
+        />
+      )}
 
       {/* VNC 显示区域 */}
       <div

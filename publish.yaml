@@ -1,7 +1,7 @@
 Edition: 3.0.0
 Type: Project
 Name: opinion_analysis
-Version: 0.0.2
+Version: 0.0.3
 Provider:
   - 阿里云
 Description: 基于AgentRun开发的舆情分析系统
@@ -43,9 +43,11 @@ Parameters:
     agentRuntimeName:
       title: AgentRuntime运行时名称
       type: string
-      default: 'opinion_analysis_${default-suffix}'
+      default: 'opinion_analysis'
       pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
-      description: AgentRuntime运行时名称
+      description: agentrun的唯一名称
+      x-hidden: true
+      x-random: true
     role:
       title: 运行时角色
       type: string

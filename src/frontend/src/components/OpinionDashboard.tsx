@@ -55,6 +55,9 @@ export function OpinionDashboard() {
   // 自动滚动到底部的 ref
   const analysisEndRef = useRef<HTMLDivElement>(null);
 
+  // 当前选中显示的 Sandbox ID（用于 VNC 切换）
+  const [selectedSandboxId, setSelectedSandboxId] = useState<string | null>(null);
+
   // 调试：监听状态变化
   useEffect(() => {
     console.log('🔍 [DEBUG] State updated:', {
@@ -63,8 +66,24 @@ export function OpinionDashboard() {
       collected_data_summary_count: state.collected_data_summary?.length || 0,
       report_text_length: state.report_text?.length || 0,
       final_html_length: state.final_html?.length || 0,
+      sandboxes_count: state.sandboxes?.length || 0,
+      active_sandbox_id: state.active_sandbox_id,
     });
   }, [state]);
+
+  // 当 active_sandbox_id 变化时，自动切换到新的 sandbox
+  useEffect(() => {
+    if (state.active_sandbox_id && state.active_sandbox_id !== selectedSandboxId) {
+      console.log('🔄 Active sandbox changed from state:', state.active_sandbox_id);
+      setSelectedSandboxId(state.active_sandbox_id);
+    }
+  }, [state.active_sandbox_id, selectedSandboxId]);
+
+  // 处理 sandbox 切换
+  const handleSandboxSelect = (sandboxId: string) => {
+    console.log('👆 User selected sandbox:', sandboxId);
+    setSelectedSandboxId(sandboxId);
+  };
 
   // 根据状态自动切换 Tab
   useEffect(() => {
@@ -380,6 +399,9 @@ export function OpinionDashboard() {
                 className='w-full h-full'
                 pollingInterval={10000}
                 active={isCollectingPhase}
+                sandboxes={state.sandboxes || []}
+                activeSandboxId={selectedSandboxId || state.active_sandbox_id}
+                onSandboxSelect={handleSandboxSelect}
               />
             )}
 
