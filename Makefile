@@ -37,6 +37,13 @@ dev:
 	@cp -r out agent/
 	@echo "   启动服务: http://localhost:8000"
 	@cd agent && uv run src/main.py
+	
+	
+backend:
+	cd src/backend && uv run src/main.py
+
+frontend:
+	cd src/frontend && npm run dev
 
 src/frontend/out/index.html: $(wildcard src/frontend/src/*)
 	cd src/frontend && npm run build

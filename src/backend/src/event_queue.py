@@ -47,3 +47,4 @@ class EventQueueManager:
 # 全局事件队列管理器
 event_manager = EventQueueManager()
 
+
