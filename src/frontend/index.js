@@ -5,6 +5,7 @@ const path = require('path');
 http
   .createServer(function (request, response) {
     var filePath = '.' + request.url;
+    filePath = filePath.replace(/\?.*$/, '');
     if (filePath == './') filePath = './index.html';
 
     var extname = path.extname(filePath);
@@ -31,7 +32,10 @@ http
     }
 
     fs.readFile(filePath, function (error, content) {
-      if (!!content && filePath.endsWith('.js')) {
+      if (
+        !!content &&
+        (contentType === 'text/html' || contentType === 'text/javascript')
+) {
         content = content
           .toString()
           .replace(
