@@ -16,7 +16,9 @@ const VncViewer = dynamic(
       <div className='w-full h-full flex items-center justify-center bg-slate-50 dark:bg-black'>
         <div className='flex flex-col items-center gap-4'>
           <div className='w-12 h-12 border-4 border-blue-500 dark:border-cyan-500 border-t-transparent rounded-full animate-spin'></div>
-          <span className='text-blue-600 dark:text-cyan-400 text-sm'>加载 VNC 组件...</span>
+          <span className='text-blue-600 dark:text-cyan-400 text-sm'>
+            加载 VNC 组件...
+          </span>
         </div>
       </div>
     ),
@@ -57,7 +59,9 @@ export function OpinionDashboard() {
   const analysisEndRef = useRef<HTMLDivElement>(null);
 
   // 当前选中显示的 Sandbox ID（用于 VNC 切换）
-  const [selectedSandboxId, setSelectedSandboxId] = useState<string | null>(null);
+  const [selectedSandboxId, setSelectedSandboxId] = useState<string | null>(
+    null
+  );
 
   // 调试：监听状态变化
   useEffect(() => {
@@ -74,8 +78,14 @@ export function OpinionDashboard() {
 
   // 当 active_sandbox_id 变化时，自动切换到新的 sandbox
   useEffect(() => {
-    if (state.active_sandbox_id && state.active_sandbox_id !== selectedSandboxId) {
-      console.log('🔄 Active sandbox changed from state:', state.active_sandbox_id);
+    if (
+      state.active_sandbox_id &&
+      state.active_sandbox_id !== selectedSandboxId
+    ) {
+      console.log(
+        '🔄 Active sandbox changed from state:',
+        state.active_sandbox_id
+      );
       setSelectedSandboxId(state.active_sandbox_id);
     }
   }, [state.active_sandbox_id, selectedSandboxId]);
@@ -235,7 +245,7 @@ export function OpinionDashboard() {
                   type='text'
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleStartAnalysis()}
+                  // onKeyDown={(e) => e.key === 'Enter' && handleStartAnalysis()}
                   placeholder='例如：新能源汽车...'
                   disabled={running}
                   className='w-full bg-gray-50 dark:bg-slate-950/80 text-gray-700 dark:text-cyan-100 border border-gray-200 dark:border-cyan-800/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/40 dark:focus:ring-cyan-500/50 focus:border-violet-400 dark:focus:border-cyan-500 disabled:opacity-50 placeholder:text-gray-400 dark:placeholder:text-slate-600 transition-all'
