@@ -1,14 +1,14 @@
 'use client';
 
 import { ENDPOINT } from '@/lib/const';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { SandboxInfo } from '@/lib/types';
 
 interface VncViewerProps {
   className?: string;
   pollingInterval?: number;
   active?: boolean;
-  // 新增：支持多 sandbox 切换
+  // 支持多 sandbox 切换
   sandboxes?: SandboxInfo[];
   activeSandboxId?: string;
   onSandboxSelect?: (sandboxId: string) => void;
@@ -42,13 +42,30 @@ export function VncViewer({
   const rfbRef = useRef<any>(null);
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
-  const [sandboxId, setSandboxId] = useState<string | null>(null);
+  const [currentSandboxId, setCurrentSandboxId] = useState<string | null>(null);
   const [rfbLoaded, setRfbLoaded] = useState(!!cachedRFB);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastUrlRef = useRef<string | null>(null);
+  const lastActiveSandboxIdRef = useRef<string | null>(null);
+  
+  // 重连间隔（毫秒）
+  const RECONNECT_INTERVAL = 10000;
   
   // 是否显示 sandbox 选择器
   const [showSandboxSelector, setShowSandboxSelector] = useState(false);
+  
+  // 使用 useMemo 稳定 sandboxes，避免引用变化导致重复渲染
+  const sandboxIds = sandboxes.map(s => s.sandbox_id).join(',');
+  const stableSandboxes = useMemo(() => {
+    return sandboxes.map(s => ({
+      sandbox_id: s.sandbox_id,
+      vnc_url: s.vnc_url,
+      livestream_url: s.livestream_url,
+      active: s.active,
+    }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sandboxIds]);
 
   // 加载本地 noVNC RFB 模块
   useEffect(() => {
@@ -110,6 +127,30 @@ export function VncViewer({
         }
       }, 10000);
     });
+  }, []);
+
+  // 根据当前页面协议调整 WebSocket URL
+  // 如果页面是 http，则使用 ws；如果是 https，则使用 wss
+  const adjustWebSocketUrl = useCallback((url: string): string => {
+    if (typeof window === 'undefined') return url;
+    
+    const isHttps = window.location.protocol === 'https:';
+    
+    // 如果页面是 http，确保 WebSocket 使用 ws
+    if (!isHttps && url.startsWith('wss://')) {
+      const adjustedUrl = url.replace('wss://', 'ws://');
+      console.log('🔄 Adjusting WebSocket URL for HTTP page: wss -> ws');
+      return adjustedUrl;
+    }
+    
+    // 如果页面是 https，确保 WebSocket 使用 wss
+    if (isHttps && url.startsWith('ws://')) {
+      const adjustedUrl = url.replace('ws://', 'wss://');
+      console.log('🔄 Adjusting WebSocket URL for HTTPS page: ws -> wss');
+      return adjustedUrl;
+    }
+    
+    return url;
   }, []);
 
   // 清理 RFB 连接
@@ -230,28 +271,44 @@ export function VncViewer({
   );
 
   // 获取 VNC URL
-  const fetchVncUrl = useCallback(async () => {
+  // 注意：此函数使用 ref 来读取当前 status，避免依赖 status 导致的重复渲染
+  const statusRef = useRef<ConnectionStatus>(status);
+  statusRef.current = status;
+  
+  const fetchVncUrl = useCallback(async (forceReconnect = false) => {
     if (!rfbLoaded) {
       console.log('⏳ RFB not loaded yet, skipping fetch');
       return;
     }
+    
+    // 使用 ref 读取当前状态，避免依赖 status
+    const currentStatus = statusRef.current;
 
     try {
       // 如果有传入的 sandboxes 和 activeSandboxId，优先使用
-      if (sandboxes.length > 0 && activeSandboxId) {
+      if (stableSandboxes.length > 0 && activeSandboxId) {
         const targetSandbox = sandboxes.find(s => s.sandbox_id === activeSandboxId);
         if (targetSandbox && targetSandbox.livestream_url) {
           console.log('🔍 Using sandbox from props:', activeSandboxId.slice(0, 8));
-          setSandboxId(targetSandbox.sandbox_id);
+          setCurrentSandboxId(targetSandbox.sandbox_id);
           
+          // 只有在强制重连、URL 变化、或未连接状态下才重连
+          // 关键修复：不要在 connected 状态下因为轮询而重连
           const needReconnect =
+            forceReconnect ||
             targetSandbox.livestream_url !== lastUrlRef.current ||
-            status === 'disconnected' ||
-            status === 'error';
+            currentStatus === 'disconnected' ||
+            currentStatus === 'error';
 
-          if (needReconnect) {
+          if (needReconnect && currentStatus !== 'connected') {
             console.log('🔄 URL changed or need reconnect, connecting...');
-            connectVnc(targetSandbox.livestream_url);
+            const adjustedUrl = adjustWebSocketUrl(targetSandbox.livestream_url);
+            connectVnc(adjustedUrl);
+          } else if (forceReconnect) {
+            // 强制重连时，即使已连接也重连
+            console.log('🔄 Force reconnect requested...');
+            const adjustedUrl = adjustWebSocketUrl(targetSandbox.livestream_url);
+            connectVnc(adjustedUrl);
           }
           return;
         }
@@ -263,17 +320,25 @@ export function VncViewer({
       console.log('📡 VNC API response:', data);
 
       if (data.available && data.livestream_url) {
-        setSandboxId(data.sandbox_id);
+        setCurrentSandboxId(data.sandbox_id);
 
         // 检查 URL 是否变化或需要重连
+        // 关键修复：不要在 connected 状态下因为轮询而重连
         const needReconnect =
+          forceReconnect ||
           data.livestream_url !== lastUrlRef.current ||
-          status === 'disconnected' ||
-          status === 'error';
+          currentStatus === 'disconnected' ||
+          currentStatus === 'error';
 
-        if (needReconnect) {
+        if (needReconnect && currentStatus !== 'connected') {
           console.log('🔄 URL changed or need reconnect, connecting...');
-          connectVnc(data.livestream_url);
+          const adjustedUrl = adjustWebSocketUrl(data.livestream_url);
+          connectVnc(adjustedUrl);
+        } else if (forceReconnect) {
+          // 强制重连时，即使已连接也重连
+          console.log('🔄 Force reconnect requested...');
+          const adjustedUrl = adjustWebSocketUrl(data.livestream_url);
+          connectVnc(adjustedUrl);
         } else {
           console.log('✓ Already connected to same URL');
         }
@@ -287,9 +352,9 @@ export function VncViewer({
       setError('无法获取 VNC URL');
       setStatus('error');
     }
-  }, [connectVnc, status, rfbLoaded, sandboxes, activeSandboxId]);
+  }, [connectVnc, adjustWebSocketUrl, rfbLoaded, stableSandboxes, sandboxes, activeSandboxId]);
 
-  // 轮询 URL
+  // 轮询 URL - 使用稳定的依赖
   useEffect(() => {
     if (!active || !rfbLoaded) {
       cleanupRfb();
@@ -307,8 +372,8 @@ export function VncViewer({
     // 立即获取一次
     fetchVncUrl();
 
-    // 开始轮询
-    pollingRef.current = setInterval(fetchVncUrl, pollingInterval);
+    // 开始轮询（使用较长间隔避免频繁刷新）
+    pollingRef.current = setInterval(() => fetchVncUrl(), pollingInterval);
 
     return () => {
       if (pollingRef.current) {
@@ -316,14 +381,47 @@ export function VncViewer({
         pollingRef.current = null;
       }
     };
-  }, [active, pollingInterval, fetchVncUrl, cleanupRfb, rfbLoaded]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, pollingInterval, rfbLoaded]);
 
   // 组件卸载时清理
   useEffect(() => {
     return () => {
       cleanupRfb();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
     };
   }, [cleanupRfb]);
+  
+  // 连接失败时自动重连（每 10 秒尝试一次）
+  useEffect(() => {
+    // 清除之前的重连定时器
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    
+    // 如果处于错误状态且组件处于激活状态，设置自动重连
+    if (status === 'error' && active && rfbLoaded) {
+      console.log(`🔄 将在 ${RECONNECT_INTERVAL / 1000} 秒后自动重连...`);
+      reconnectTimerRef.current = setTimeout(() => {
+        console.log('🔄 自动重连中...');
+        cleanupRfb();
+        lastUrlRef.current = null;
+        fetchVncUrl(true);
+      }, RECONNECT_INTERVAL);
+    }
+    
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, active, rfbLoaded]);
 
   // 手动重连
   const handleReconnect = () => {
@@ -333,25 +431,35 @@ export function VncViewer({
   };
 
   // 处理 sandbox 切换
-  const handleSandboxClick = (selectedSandboxId: string) => {
+  const handleSandboxClick = (selectedId: string) => {
     if (onSandboxSelect) {
-      onSandboxSelect(selectedSandboxId);
+      onSandboxSelect(selectedId);
     }
     setShowSandboxSelector(false);
-    // 强制重连到新的 sandbox
-    cleanupRfb();
-    lastUrlRef.current = null;
   };
 
   // 当 activeSandboxId 变化时，触发重连
   useEffect(() => {
-    if (activeSandboxId && activeSandboxId !== sandboxId && rfbLoaded) {
-      console.log('🔄 Active sandbox changed, reconnecting...');
+    // 只有当 activeSandboxId 真正变化时才重连
+    if (
+      activeSandboxId && 
+      activeSandboxId !== lastActiveSandboxIdRef.current && 
+      rfbLoaded
+    ) {
+      console.log('🔄 Active sandbox changed:', lastActiveSandboxIdRef.current, '->', activeSandboxId);
+      lastActiveSandboxIdRef.current = activeSandboxId;
+      
+      // 清理旧连接并强制重连
       cleanupRfb();
       lastUrlRef.current = null;
-      fetchVncUrl();
+      
+      // 延迟一点以确保状态更新
+      setTimeout(() => {
+        fetchVncUrl(true);
+      }, 100);
     }
-  }, [activeSandboxId, sandboxId, rfbLoaded, cleanupRfb, fetchVncUrl]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSandboxId, rfbLoaded]);
 
   return (
     <div className={`relative bg-black ${className}`}>
@@ -388,35 +496,35 @@ export function VncViewer({
           </button>
           
           {/* Sandbox ID - 可点击切换 */}
-          {sandboxId && (
+          {currentSandboxId && (
             <div className='relative'>
               <button
                 onClick={() => setShowSandboxSelector(!showSandboxSelector)}
                 className={`text-xs px-2 py-1 rounded transition-colors ${
-                  sandboxes.length > 1
+                  stableSandboxes.length > 1
                     ? 'text-cyan-400 hover:text-cyan-300 hover:bg-cyan-900/30 cursor-pointer'
                     : 'text-slate-600 cursor-default'
                 }`}
-                title={sandboxes.length > 1 ? '点击切换 Sandbox' : 'Sandbox ID'}
+                title={stableSandboxes.length > 1 ? '点击切换 Sandbox' : 'Sandbox ID'}
               >
-                {sandboxId.slice(0, 8)}...
-                {sandboxes.length > 1 && (
+                {currentSandboxId.slice(0, 8)}...
+                {stableSandboxes.length > 1 && (
                   <span className='ml-1 text-cyan-500'>▼</span>
                 )}
               </button>
               
               {/* Sandbox 选择器下拉菜单 */}
-              {showSandboxSelector && sandboxes.length > 1 && (
+              {showSandboxSelector && stableSandboxes.length > 1 && (
                 <div className='absolute top-full right-0 mt-1 bg-slate-900 border border-cyan-800/50 rounded-lg shadow-xl z-20 min-w-[200px] overflow-hidden'>
                   <div className='px-3 py-2 text-xs text-slate-400 border-b border-slate-800'>
-                    选择 Sandbox ({sandboxes.length} 个可用)
+                    选择 Sandbox ({stableSandboxes.length} 个可用)
                   </div>
-                  {sandboxes.map((sb) => (
+                  {stableSandboxes.map((sb) => (
                     <button
                       key={sb.sandbox_id}
                       onClick={() => handleSandboxClick(sb.sandbox_id)}
                       className={`w-full px-3 py-2 text-left text-xs transition-colors flex items-center gap-2 ${
-                        sb.sandbox_id === (activeSandboxId || sandboxId)
+                        sb.sandbox_id === (activeSandboxId || currentSandboxId)
                           ? 'bg-cyan-900/30 text-cyan-400'
                           : 'text-slate-300 hover:bg-slate-800'
                       }`}
@@ -427,7 +535,7 @@ export function VncViewer({
                         }`}
                       ></span>
                       <span className='font-mono'>{sb.sandbox_id.slice(0, 12)}...</span>
-                      {sb.sandbox_id === (activeSandboxId || sandboxId) && (
+                      {sb.sandbox_id === (activeSandboxId || currentSandboxId) && (
                         <span className='ml-auto text-cyan-500'>✓</span>
                       )}
                     </button>
@@ -478,11 +586,14 @@ export function VncViewer({
                 <span className='text-red-400 text-sm text-center px-4'>
                   {error}
                 </span>
+                <span className='text-slate-500 text-xs'>
+                  将在 {RECONNECT_INTERVAL / 1000} 秒后自动重连
+                </span>
                 <button
                   onClick={handleReconnect}
                   className='px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm rounded-lg transition-colors'
                 >
-                  重试
+                  立即重试
                 </button>
               </>
             )}

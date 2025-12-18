@@ -7,6 +7,98 @@ import { useEffect, useRef, useState } from 'react';
 import { ENDPOINT } from '@/lib/const';
 import { ThemeSwitcher } from './ThemeSwitcher';
 
+// 缓存已加载的库
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedHtml2Canvas: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedHtml2Pdf: any = null;
+
+// 从本地或 CDN 加载脚本的辅助函数
+const loadScript = (localPath: string, cdnUrl: string, globalName: string): Promise<unknown> => {
+  return new Promise((resolve, reject) => {
+    // 检查是否已加载
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((window as any)[globalName]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      resolve((window as any)[globalName]);
+      return;
+    }
+    
+    const script = document.createElement('script');
+    // 优先使用本地路径
+    script.src = localPath;
+    script.async = true;
+    
+    script.onload = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lib = (window as any)[globalName];
+      if (lib) {
+        console.log(`✅ Loaded ${globalName} from local`);
+        resolve(lib);
+      } else {
+        reject(new Error(`${globalName} not found after loading script`));
+      }
+    };
+    
+    script.onerror = () => {
+      console.warn(`⚠️ Failed to load ${globalName} from local, trying CDN...`);
+      // 本地加载失败，尝试 CDN
+      const cdnScript = document.createElement('script');
+      cdnScript.src = cdnUrl;
+      cdnScript.async = true;
+      cdnScript.onload = () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const lib = (window as any)[globalName];
+        if (lib) {
+          console.log(`✅ Loaded ${globalName} from CDN`);
+          resolve(lib);
+        } else {
+          reject(new Error(`${globalName} not found after loading from CDN`));
+        }
+      };
+      cdnScript.onerror = () => reject(new Error(`Failed to load ${globalName} from both local and CDN`));
+      document.head.appendChild(cdnScript);
+    };
+    
+    document.head.appendChild(script);
+  });
+};
+
+// 导出工具函数 - 直接使用本地脚本加载
+const loadHtml2Canvas = async () => {
+  if (typeof window === 'undefined') return null;
+  if (cachedHtml2Canvas) return cachedHtml2Canvas;
+  
+  try {
+    cachedHtml2Canvas = await loadScript(
+      '/libs/html2canvas.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+      'html2canvas'
+    );
+    return cachedHtml2Canvas;
+  } catch (loadErr) {
+    console.error('Script load failed:', loadErr);
+    return null;
+  }
+};
+
+const loadHtml2Pdf = async () => {
+  if (typeof window === 'undefined') return null;
+  if (cachedHtml2Pdf) return cachedHtml2Pdf;
+  
+  try {
+    cachedHtml2Pdf = await loadScript(
+      '/libs/html2pdf.bundle.min.js',
+      'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js',
+      'html2pdf'
+    );
+    return cachedHtml2Pdf;
+  } catch (loadErr) {
+    console.error('Script load failed:', loadErr);
+    return null;
+  }
+};
+
 // 动态导入 VncViewer，禁用 SSR（noVNC 需要浏览器环境）
 const VncViewer = dynamic(
   () => import('./VncViewer').then((mod) => ({ default: mod.VncViewer })),
@@ -63,8 +155,12 @@ export function OpinionDashboard() {
     null
   );
 
-  // 调试：监听状态变化
+  // 记录上次的 active_sandbox_id，避免重复更新
+  const lastActiveSandboxIdRef = useRef<string | null>(null);
+
+  // 调试：监听状态变化（仅在开发模式下）
   useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
     console.log('🔍 [DEBUG] State updated:', {
       status: state.status,
       keyword: state.keyword,
@@ -74,25 +170,32 @@ export function OpinionDashboard() {
       sandboxes_count: state.sandboxes?.length || 0,
       active_sandbox_id: state.active_sandbox_id,
     });
+    }
   }, [state]);
 
   // 当 active_sandbox_id 变化时，自动切换到新的 sandbox
+  // 使用 ref 避免不必要的重复更新
   useEffect(() => {
     if (
       state.active_sandbox_id &&
-      state.active_sandbox_id !== selectedSandboxId
+      state.active_sandbox_id !== lastActiveSandboxIdRef.current
     ) {
       console.log(
         '🔄 Active sandbox changed from state:',
+        lastActiveSandboxIdRef.current,
+        '->',
         state.active_sandbox_id
       );
+      lastActiveSandboxIdRef.current = state.active_sandbox_id;
       setSelectedSandboxId(state.active_sandbox_id);
     }
-  }, [state.active_sandbox_id, selectedSandboxId]);
+  }, [state.active_sandbox_id]);
 
-  // 处理 sandbox 切换
+  // 处理用户手动选择 sandbox
   const handleSandboxSelect = (sandboxId: string) => {
     console.log('👆 User selected sandbox:', sandboxId);
+    // 用户手动选择时，更新 ref 和 state
+    lastActiveSandboxIdRef.current = sandboxId;
     setSelectedSandboxId(sandboxId);
   };
 
@@ -206,6 +309,8 @@ export function OpinionDashboard() {
                   ? 'border-emerald-300 dark:border-green-500 text-emerald-600 dark:text-green-400 bg-emerald-50 dark:bg-transparent'
                   : state.status === 'idle'
                   ? 'border-gray-200 dark:border-slate-700 text-gray-400 bg-gray-50 dark:bg-transparent'
+                  : state.status === 'error'
+                  ? 'border-red-300 dark:border-red-500 text-red-600 dark:text-red-400 bg-red-50 dark:bg-transparent'
                   : 'border-violet-300 dark:border-cyan-500 text-violet-600 dark:text-cyan-400 bg-violet-50 dark:bg-transparent animate-pulse'
               }`}
             >
@@ -219,6 +324,7 @@ export function OpinionDashboard() {
               {state.status === 'written' && '✅ 撰写完成'}
               {state.status === 'rendering' && '🎨 渲染中...'}
               {state.status === 'complete' && '✅ 完成'}
+              {state.status === 'error' && '❌ 错误'}
               {state.current_phase && ` - ${state.current_phase}`}
             </div>
           </div>
@@ -607,10 +713,145 @@ export function OpinionDashboard() {
 
             {/* Tab: 最终报告 */}
             {activeTab === 'report' && state.final_html && (
-              <div className='w-full h-full bg-white'>
+              <div className='w-full h-full bg-white flex flex-col'>
+                {/* 下载工具栏 */}
+                <div className='flex items-center gap-2 px-4 py-2 bg-gray-50 dark:bg-slate-800 border-b border-gray-200 dark:border-slate-700 shrink-0 flex-wrap'>
+                  <span className='text-sm text-gray-600 dark:text-slate-400 mr-2'>下载报告：</span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        // 先用 html2canvas 截图，再用 jsPDF 生成 PDF
+                        const html2canvas = await loadHtml2Canvas();
+                        const html2pdf = await loadHtml2Pdf();
+                        
+                        if (!html2canvas || !html2pdf) {
+                          alert('PDF 导出库加载失败，请刷新页面后重试');
+                          return;
+                        }
+                        
+                        const iframe = document.getElementById('report-iframe') as HTMLIFrameElement;
+                        if (iframe && iframe.contentDocument) {
+                          const container = iframe.contentDocument.querySelector('.container') || iframe.contentDocument.body;
+                          
+                          // 使用 html2pdf 的方式，但配置更高质量的 html2canvas
+                          const opt = {
+                            margin: [10, 10, 10, 10],
+                            filename: `${state.keyword || 'report'}_舆情分析报告.pdf`,
+                            image: { type: 'jpeg', quality: 0.98 },
+                            html2canvas: { 
+                              scale: 2,
+                              useCORS: true,
+                              logging: false,
+                              backgroundColor: '#ffffff',
+                              scrollY: 0,
+                              scrollX: 0,
+                              windowWidth: (container as HTMLElement).scrollWidth,
+                              windowHeight: (container as HTMLElement).scrollHeight,
+                            },
+                            jsPDF: { 
+                              unit: 'mm', 
+                              format: 'a4', 
+                              orientation: 'portrait',
+                              compress: true
+                            },
+                            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+                          };
+                          
+                          await html2pdf().set(opt).from(container as HTMLElement).save();
+                        }
+                      } catch (err) {
+                        console.error('PDF 导出失败:', err);
+                        alert('PDF 导出失败，请稍后重试');
+                      }
+                    }}
+                    className='px-3 py-1.5 text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 rounded-lg hover:bg-violet-200 dark:hover:bg-violet-800/30 transition-colors flex items-center gap-1.5'
+                    title='直接下载 PDF 文件'
+                  >
+                    📄 下载 PDF
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const html2canvas = await loadHtml2Canvas();
+                        if (!html2canvas) {
+                          alert('PNG 导出库加载失败，请刷新页面后重试');
+                          return;
+                        }
+                        const iframe = document.getElementById('report-iframe') as HTMLIFrameElement;
+                        if (iframe && iframe.contentDocument) {
+                          const container = iframe.contentDocument.querySelector('.container') || iframe.contentDocument.body;
+                          const rect = (container as HTMLElement).getBoundingClientRect();
+                          const canvas = await html2canvas(container as HTMLElement, {
+                            scale: 3,
+                            useCORS: true,
+                            logging: false,
+                            backgroundColor: '#ffffff',
+                            width: rect.width,
+                            height: (container as HTMLElement).scrollHeight,
+                            windowWidth: rect.width,
+                            windowHeight: (container as HTMLElement).scrollHeight,
+                          });
+                          
+                          const link = document.createElement('a');
+                          link.download = `${state.keyword || 'report'}_舆情分析报告.png`;
+                          link.href = canvas.toDataURL('image/png', 1.0);
+                          link.click();
+                        }
+                      } catch (err) {
+                        console.error('PNG 导出失败:', err);
+                        alert('PNG 导出失败，请稍后重试');
+                      }
+                    }}
+                    className='px-3 py-1.5 text-xs font-medium bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 rounded-lg hover:bg-emerald-200 dark:hover:bg-emerald-800/30 transition-colors flex items-center gap-1.5'
+                    title='保存报告为高清 PNG 图片'
+                  >
+                    🖼️ 下载 PNG
+                  </button>
+                  <button
+                    onClick={() => {
+                      // 直接使用完整的 final_html，包含所有样式
+                      // 添加 Word 兼容的 XML 声明
+                      const wordContent = `
+<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" 
+      xmlns:w="urn:schemas-microsoft-com:office:word" 
+      xmlns="http://www.w3.org/TR/REC-html40">
+${state.final_html.replace('<html>', '').replace('</html>', '').replace('<!DOCTYPE html>', '')}
+</html>`;
+                      const blob = new Blob(['\ufeff' + wordContent], { type: 'application/msword;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.download = `${state.keyword || 'report'}_舆情分析报告.doc`;
+                      link.href = url;
+                      link.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className='px-3 py-1.5 text-xs font-medium bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300 rounded-lg hover:bg-sky-200 dark:hover:bg-sky-800/30 transition-colors flex items-center gap-1.5'
+                    title='下载为 Word 文档（包含完整样式，图表需在浏览器中查看）'
+                  >
+                    📝 下载 Word
+                  </button>
+                  <button
+                    onClick={() => {
+                      const blob = new Blob([state.final_html], { type: 'text/html;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.download = `${state.keyword || 'report'}_舆情分析报告.html`;
+                      link.href = url;
+                      link.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className='px-3 py-1.5 text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-800/30 transition-colors flex items-center gap-1.5'
+                    title='下载 HTML 源文件（可在浏览器中打开）'
+                  >
+                    📑 下载 HTML
+                  </button>
+                </div>
+                {/* 报告 iframe */}
                 <iframe
+                  id='report-iframe'
                   srcDoc={state.final_html}
-                  className='w-full h-full border-0'
+                  className='w-full flex-1 border-0'
                   title='Analysis Report'
                 />
               </div>

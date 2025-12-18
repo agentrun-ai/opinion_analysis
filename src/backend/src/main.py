@@ -100,24 +100,11 @@ async def agent_endpoint(request: Request):
         
         # 3. 消费事件队列
         agent_done = False
+        has_error = False
         
         while not agent_done:
             try:
-                # 检查 Agent 是否完成
-                if agent_task.done():
-                    agent_done = True
-                    # 处理可能的异常
-                    try:
-                        agent_task.result()
-                    except Exception as e:
-                        print(f"❌ Agent 执行错误: {e}")
-                        error_event = {
-                            "type": "RUN_ERROR",
-                            "message": str(e)
-                        }
-                        yield f"data: {json.dumps(error_event)}\n\n"
-                
-                # 非阻塞获取事件
+                # 非阻塞获取事件（先获取队列中的事件）
                 try:
                     event = queue.get_nowait()
                     # 编码事件
@@ -132,34 +119,50 @@ async def agent_endpoint(request: Request):
                 except asyncio.QueueEmpty:
                     # 队列为空，等待一小段时间
                     await asyncio.sleep(0.1)
+                
+                # 检查 Agent 是否完成（在处理完队列事件之后再检查）
+                if agent_task.done():
+                    # 先清空队列中剩余的事件（在发送 RUN_ERROR 之前）
+                    while not queue.empty():
+                        try:
+                            event = queue.get_nowait()
+                            if hasattr(event, 'model_dump'):
+                                event_dict = event.model_dump()
+                            elif isinstance(event, dict):
+                                event_dict = event
+                            else:
+                                event_dict = {"type": "UNKNOWN", "data": str(event)}
+                            yield f"data: {json.dumps(event_dict, ensure_ascii=False, default=str)}\n\n"
+                        except:
+                            break
+                    
+                    agent_done = True
+                    # 处理可能的异常
+                    try:
+                        agent_task.result()
+                    except Exception as e:
+                        print(f"❌ Agent 执行错误: {e}")
+                        has_error = True
+                        error_event = {
+                            "type": "RUN_ERROR",
+                            "message": str(e)
+                        }
+                        yield f"data: {json.dumps(error_event)}\n\n"
                     
             except Exception as e:
                 print(f"❌ 事件生成器错误: {e}")
                 break
         
-        # 4. 清空队列中剩余的事件
-        while not queue.empty():
-            try:
-                event = queue.get_nowait()
-                if hasattr(event, 'model_dump'):
-                    event_dict = event.model_dump()
-                elif isinstance(event, dict):
-                    event_dict = event
-                else:
-                    event_dict = {"type": "UNKNOWN", "data": str(event)}
-                yield f"data: {json.dumps(event_dict, ensure_ascii=False, default=str)}\n\n"
-            except:
-                break
+        # 4. 发送 RUN_FINISHED 事件（只在没有错误时发送）
+        if not has_error:
+            run_finished = {
+                "type": "RUN_FINISHED",
+                "threadId": thread_id,
+                "runId": run_id
+            }
+            yield f"data: {json.dumps(run_finished)}\n\n"
         
-        # 5. 发送 RUN_FINISHED 事件
-        run_finished = {
-            "type": "RUN_FINISHED",
-            "threadId": thread_id,
-            "runId": run_id
-        }
-        yield f"data: {json.dumps(run_finished)}\n\n"
-        
-        # 6. 清理
+        # 5. 清理
         event_manager.remove_queue(run_id)
     
     return StreamingResponse(

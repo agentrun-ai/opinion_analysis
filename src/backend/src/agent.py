@@ -132,24 +132,64 @@ _sandboxes: Dict[str, BrowserSandbox] = {}
 _sandbox_lock = asyncio.Lock()
 
 
+class SandboxTemplateNotFoundError(Exception):
+    """Sandbox 模板不存在错误"""
+    pass
+
+
+class SandboxCreationError(Exception):
+    """Sandbox 创建错误"""
+    pass
+
+
 async def create_browser_sandbox() -> Optional[BrowserSandbox]:
-    """创建新的 Browser Sandbox 实例"""
+    """创建新的 Browser Sandbox 实例
+    
+    Raises:
+        SandboxTemplateNotFoundError: 模板不存在时抛出
+        SandboxCreationError: 其他创建错误时抛出
+    """
     if not agentrun_browser_sandbox_name:
         return None
     
     async with _sandbox_lock:
         print("🌐 正在创建新的 Browser Sandbox...")
-        sandbox = await Sandbox.create_async(
-            template_type=TemplateType.BROWSER,
-            template_name=agentrun_browser_sandbox_name,
-        )
-        _sandboxes[sandbox.sandbox_id] = sandbox
-        print(f"✅ Browser Sandbox 创建成功: {sandbox.sandbox_id}")
-        return sandbox
+        try:
+            sandbox = await Sandbox.create_async(
+                template_type=TemplateType.BROWSER,
+                template_name=agentrun_browser_sandbox_name,
+            )
+            _sandboxes[sandbox.sandbox_id] = sandbox
+            print(f"✅ Browser Sandbox 创建成功: {sandbox.sandbox_id}")
+            return sandbox
+        except Exception as e:
+            error_msg = str(e).lower()
+            # 检测模板不存在的错误
+            template_not_found_patterns = [
+                "template not found",
+                "template does not exist",
+                "no such template",
+                "template_not_found",
+                "not found",
+                "无法找到模板",
+            ]
+            if any(pattern in error_msg for pattern in template_not_found_patterns):
+                print(f"❌ Sandbox 模板不存在: {agentrun_browser_sandbox_name}")
+                raise SandboxTemplateNotFoundError(
+                    f"Sandbox 模板 '{agentrun_browser_sandbox_name}' 不存在，请检查 AGENTRUN_BROWSER_SANDBOX_NAME 配置"
+                )
+            else:
+                print(f"❌ 创建 Sandbox 失败: {e}")
+                raise SandboxCreationError(f"创建 Sandbox 失败: {e}")
 
 
 async def get_browser_sandbox(sandbox_id: str = None) -> Optional[BrowserSandbox]:
-    """获取指定或任意可用的 Browser Sandbox"""
+    """获取指定或任意可用的 Browser Sandbox
+    
+    Raises:
+        SandboxTemplateNotFoundError: 模板不存在时抛出
+        SandboxCreationError: 其他创建错误时抛出
+    """
     async with _sandbox_lock:
         if sandbox_id and sandbox_id in _sandboxes:
             return _sandboxes[sandbox_id]
@@ -158,12 +198,30 @@ async def get_browser_sandbox(sandbox_id: str = None) -> Optional[BrowserSandbox
             return sandbox
         
         if agentrun_browser_sandbox_name:
-            sandbox = await Sandbox.create_async(
-                template_type=TemplateType.BROWSER,
-                template_name=agentrun_browser_sandbox_name,
-            )
-            _sandboxes[sandbox.sandbox_id] = sandbox
-            return sandbox
+            try:
+                sandbox = await Sandbox.create_async(
+                    template_type=TemplateType.BROWSER,
+                    template_name=agentrun_browser_sandbox_name,
+                )
+                _sandboxes[sandbox.sandbox_id] = sandbox
+                return sandbox
+            except Exception as e:
+                error_msg = str(e).lower()
+                # 检测模板不存在的错误
+                template_not_found_patterns = [
+                    "template not found",
+                    "template does not exist",
+                    "no such template",
+                    "template_not_found",
+                    "not found",
+                    "无法找到模板",
+                ]
+                if any(pattern in error_msg for pattern in template_not_found_patterns):
+                    raise SandboxTemplateNotFoundError(
+                        f"Sandbox 模板 '{agentrun_browser_sandbox_name}' 不存在，请检查 AGENTRUN_BROWSER_SANDBOX_NAME 配置"
+                    )
+                else:
+                    raise SandboxCreationError(f"创建 Sandbox 失败: {e}")
         
         return None
 
@@ -721,12 +779,29 @@ async def collect_data(
     queries = generate_search_queries(keyword)
     
     # 创建新的 Sandbox
-    sandbox = await create_browser_sandbox()
-    if not sandbox:
-        state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Browser Sandbox 不可用")
+    try:
+        sandbox = await create_browser_sandbox()
+        if not sandbox:
+            state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Browser Sandbox 未配置")
+            state.status = "error"
+            await push_state_event(run_id, state)
+            return "Browser Sandbox 未配置，请设置 AGENTRUN_BROWSER_SANDBOX_NAME 环境变量"
+    except SandboxTemplateNotFoundError as e:
+        # 模板不存在 - 明确报错并结束任务
+        error_msg = str(e)
+        state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {error_msg}")
         state.status = "error"
+        state.current_phase = "错误"
         await push_state_event(run_id, state)
-        return "Browser Sandbox 不可用"
+        raise RuntimeError(f"无法启动数据收集: {error_msg}")
+    except SandboxCreationError as e:
+        # 其他创建错误
+        error_msg = str(e)
+        state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {error_msg}")
+        state.status = "error"
+        state.current_phase = "错误"
+        await push_state_event(run_id, state)
+        raise RuntimeError(f"无法启动数据收集: {error_msg}")
     
     # 更新 Sandbox 信息
     sandbox_info = await get_all_sandboxes()
@@ -785,9 +860,9 @@ async def collect_data(
                 state.collection_progress = int(len(collected) / target_count * 100)
                 
                 try:
-                    # URL 编码查询参数
-                    from urllib.parse import quote
-                    encoded_query = quote(query)
+                    # URL 编码查询参数，使用 quote_plus 将空格编码为 + 而非 %20
+                    from urllib.parse import quote_plus
+                    encoded_query = quote_plus(query)
                     # 使用 cn.bing.com 中国版
                     search_url = f"https://cn.bing.com/search?q={encoded_query}"
                     state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔎 搜索 [{category}]: {query[:30]}...")
@@ -800,14 +875,49 @@ async def collect_data(
                     await page.wait_for_load_state("domcontentloaded")
                     await asyncio.sleep(2)
                     
+                    # 检查当前 URL 是否仍然是搜索页面
+                    current_url = page.url
+                    print(f"📍 当前页面 URL: {current_url}")
+                    
+                    # 如果被重定向到非搜索页面，尝试重新搜索
+                    if "bing.com/search" not in current_url:
+                        print(f"⚠️ 页面被重定向，尝试重新导航...")
+                        state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 页面重定向，重试...")
+                        await page.goto(search_url, timeout=30000)
+                        await page.wait_for_load_state("domcontentloaded")
+                        await asyncio.sleep(2)
+                    
                     # 只使用精确的选择器，避免选中无关元素
                     # .b_algo 是 Bing 搜索结果的标准类名
                     result_elements = await page.query_selector_all("li.b_algo")
                     
-                    # 如果没有结果，记录日志并继续
+                    # 打印调试信息
+                    print(f"🔢 找到 {len(result_elements) if result_elements else 0} 个搜索结果元素")
+                    
+                    # 如果没有结果，尝试其他选择器
+                    if not result_elements:
+                        # 尝试备用选择器
+                        alt_selectors = [
+                            "#b_results li.b_algo",
+                            ".b_algo",
+                            "#b_results > li",
+                        ]
+                        for alt_sel in alt_selectors:
+                            result_elements = await page.query_selector_all(alt_sel)
+                            if result_elements:
+                                print(f"✅ 使用备用选择器 {alt_sel} 找到 {len(result_elements)} 个结果")
+                                break
+                    
+                    # 如果仍然没有结果，记录日志并继续
                     if not result_elements:
                         print(f"⚠️ 搜索 [{category}] 未找到结果: {query[:30]}...")
                         state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 未找到结果: {query[:30]}...")
+                        # 打印页面 HTML 片段用于调试
+                        try:
+                            page_title = await page.title()
+                            print(f"📄 页面标题: {page_title}")
+                        except:
+                            pass
                         continue
                     
                     new_results_in_query = 0
@@ -1892,8 +2002,52 @@ async def render_html(
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{state.keyword} - 舆情分析报告</title>
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js"></script>
+    <!-- 所有链接在新窗口打开 -->
+    <base target="_blank">
+    <script>
+        // 动态加载 ECharts（支持 iframe 嵌入和独立打开）
+        (function() {{
+            var baseUrl = '';
+            try {{
+                // 如果在 iframe 中，使用父页面的 origin
+                if (window.parent && window.parent.location && window.parent !== window) {{
+                    baseUrl = window.parent.location.origin;
+                }}
+            }} catch(e) {{
+                // 跨域情况下使用当前页面的 origin
+                baseUrl = window.location.origin || '';
+            }}
+            
+            function loadScript(url) {{
+                return new Promise(function(resolve, reject) {{
+                    var script = document.createElement('script');
+                    script.src = baseUrl + url;
+                    script.onload = resolve;
+                    script.onerror = function() {{
+                        // 如果本地加载失败，尝试 CDN
+                        var fallbackUrl = url.includes('wordcloud') 
+                            ? 'https://cdn.jsdelivr.net/npm/echarts-wordcloud@2.1.0/dist/echarts-wordcloud.min.js'
+                            : 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js';
+                        var fallbackScript = document.createElement('script');
+                        fallbackScript.src = fallbackUrl;
+                        fallbackScript.onload = resolve;
+                        fallbackScript.onerror = reject;
+                        document.head.appendChild(fallbackScript);
+                    }};
+                    document.head.appendChild(script);
+                }});
+            }}
+            
+            // 按顺序加载 ECharts
+            loadScript('/echarts/echarts.min.js').then(function() {{
+                return loadScript('/echarts/echarts-wordcloud.min.js');
+            }}).then(function() {{
+                window.dispatchEvent(new CustomEvent('echarts-ready'));
+            }}).catch(function(e) {{
+                console.error('Failed to load ECharts:', e);
+            }});
+        }})();
+    </script>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ 
@@ -2221,10 +2375,16 @@ async def render_html(
         }}
         
         // 页面加载完成后初始化图表
+        // 监听 echarts-ready 事件（优先）
+        window.addEventListener('echarts-ready', initCharts);
+        
+        // 同时检查 ECharts 是否已加载（用于独立打开 HTML 的情况）
         if (document.readyState === 'complete') {{
-            initCharts();
+            setTimeout(initCharts, 500);
         }} else {{
-            window.addEventListener('load', initCharts);
+            window.addEventListener('load', function() {{
+                setTimeout(initCharts, 500);
+            }});
         }}
     </script>
 </body>

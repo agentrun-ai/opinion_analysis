@@ -154,6 +154,12 @@ export function useAgentState<T extends Record<string, unknown>>(
           if (isUnmountedRef.current) return;
           console.error('❌ Run error:', event.message);
           setError(event.message || '运行错误');
+          // 同时更新状态的 status 为 error
+          setStateInternal((prev) => ({
+            ...prev,
+            status: 'error' as unknown,
+            current_phase: '错误',
+          } as T));
         },
         onRunFinishedEvent: () => {
           if (isUnmountedRef.current) return;
