@@ -44,7 +44,7 @@ resources:
           AGENTRUN_BROWSER_SANDBOX_NAME: '{{ browserTemplate }}'
           
         # 日志配置
-        # logConfig: auto
+        logConfig: auto
         role: ${vars.role}
 
         # 端点配置
