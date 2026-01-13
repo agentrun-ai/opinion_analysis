@@ -7,4 +7,4 @@ logfire>=4.10.0
 pandas
 googlesearch-python
 markdown>=3.10
-agentrun-sdk[playwright]>=0.0.5
+agentrun-sdk[playwright]==0.0.5
