@@ -60,7 +60,7 @@ class SearchResult(BaseModel):
     snippet: str
     source: str
     date: str
-    platform: str = "bing"
+    platform: str = "baidu"
     relevance_score: float = 0.0  # 相关性得分
     detailed_content: str = ""  # 深入抓取的详细内容
 
@@ -428,8 +428,7 @@ def is_valid_result(result: SearchResult, keyword: str) -> bool:
 def generate_search_queries(keyword: str) -> List[Dict[str, str]]:
     """生成多平台搜索查询
     
-    注意：不使用 site: 操作符，因为 cn.bing.com 对其支持不稳定
-    改用关键词 + 平台名称的方式搜索
+    注意：使用关键词 + 平台名称的方式搜索，适用于百度等搜索引擎
     """
     queries = []
     
@@ -863,8 +862,8 @@ async def collect_data(
                     # URL 编码查询参数，使用 quote_plus 将空格编码为 + 而非 %20
                     from urllib.parse import quote_plus
                     encoded_query = quote_plus(query)
-                    # 使用 cn.bing.com 中国版
-                    search_url = f"https://cn.bing.com/search?q={encoded_query}"
+                    # 使用 baidu.com
+                    search_url = f"https://www.baidu.com/s?wd={encoded_query}"
                     state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔎 搜索 [{category}]: {query[:30]}...")
                     print(f"🔎 搜索 URL: {search_url}")
                     
@@ -880,7 +879,7 @@ async def collect_data(
                     print(f"📍 当前页面 URL: {current_url}")
                     
                     # 如果被重定向到非搜索页面，尝试重新搜索
-                    if "bing.com/search" not in current_url:
+                    if "baidu.com" not in current_url:
                         print(f"⚠️ 页面被重定向，尝试重新导航...")
                         state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 页面重定向，重试...")
                         await page.goto(search_url, timeout=30000)
@@ -888,8 +887,8 @@ async def collect_data(
                         await asyncio.sleep(2)
                     
                     # 只使用精确的选择器，避免选中无关元素
-                    # .b_algo 是 Bing 搜索结果的标准类名
-                    result_elements = await page.query_selector_all("li.b_algo")
+                    # .c-container 是 Baidu 搜索结果的标准类名
+                    result_elements = await page.query_selector_all(".result.c-container, .c-container")
                     
                     # 打印调试信息
                     print(f"🔢 找到 {len(result_elements) if result_elements else 0} 个搜索结果元素")
@@ -898,9 +897,9 @@ async def collect_data(
                     if not result_elements:
                         # 尝试备用选择器
                         alt_selectors = [
-                            "#b_results li.b_algo",
-                            ".b_algo",
-                            "#b_results > li",
+                            "#content_left .result",
+                            "#content_left .c-container",
+                            ".result",
                         ]
                         for alt_sel in alt_selectors:
                             result_elements = await page.query_selector_all(alt_sel)
@@ -928,8 +927,8 @@ async def collect_data(
                             break
                         
                         try:
-                            title_elem = await elem.query_selector("h2 a")
-                            snippet_elem = await elem.query_selector(".b_caption p")
+                            title_elem = await elem.query_selector("h3 a, .t a")
+                            snippet_elem = await elem.query_selector(".c-abstract, .content-right_8Zs40")
                             
                             if title_elem:
                                 title = await title_elem.inner_text()
@@ -1097,8 +1096,8 @@ async def collect_data(
                                     url=url,
                                     snippet=full_content[:500],  # 摘要保留500字
                                     source=source,
+                                    platform="baidu",
                                     date=datetime.now().strftime("%Y-%m-%d"),
-                                    platform="bing",
                                     relevance_score=relevance,
                                     detailed_content=detailed_content[:3000] if detailed_content else ""  # 详细内容
                                 )
