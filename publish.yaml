@@ -1,7 +1,7 @@
 Edition: 3.0.0
 Type: Project
 Name: opinion_analysis
-Version: 0.0.12
+Version: 0.0.14
 Provider:
   - 阿里云
 Description: 基于AgentRun开发的舆情分析系统
@@ -30,6 +30,7 @@ Parameters:
     - modelServiceName
     - agentRuntimeName
     - browserTemplate
+    - workspace
   properties:
     region:
       title: 地域
@@ -79,4 +80,9 @@ Parameters:
       pattern: "^[a-zA-Z_][a-zA-Z0-9-_:/.]{0,127}$"
       description: 请选择浏览器沙箱
       x-agentrun-sandbox: browser
-  
+    workspace:
+      title: 工作空间
+      type: string
+      default: ''
+      description: AgentRun工作空间名称，用于组织和管理Agent
+      x-agentrun-workspace: true

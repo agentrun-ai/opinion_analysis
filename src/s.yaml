@@ -5,6 +5,7 @@ vars:
   region: '{{ region }}'
   agent_name: '{{ agentRuntimeName }}'
   role: '{{ role }}'
+  workspace: '{{ workspace }}'
 
 resources:
   opinion_analysis:
@@ -13,6 +14,9 @@ resources:
       region: ${vars.region}
 
       agent:
+        # 工作空间
+        workspace:
+          id: ${vars.workspace}
         # 基本信息
         name: ${vars.agent_name}
         description: 'opinion_analysise'
